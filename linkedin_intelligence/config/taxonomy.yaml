@@ -1,0 +1,246 @@
+# Professional taxonomy for normalizing raw LinkedIn positions and companies.
+#
+# The raw value is always preserved. `role_category` / `company_type` are
+# controlled vocabularies so scoring can be done in code instead of by an LLM.
+#
+# Classification picks the category whose pattern has the LONGEST match inside
+# the normalized position/company string (ties broken by file order).
+# Pattern order within a category therefore matters little, but put the most
+# specific patterns first.
+
+roles:
+  software_engineering:
+    - software engineer
+    - software developer
+    - software engineering
+    - backend developer
+    - backend engineer
+    - frontend developer
+    - frontend engineer
+    - full stack developer
+    - fullstack developer
+    - full-stack developer
+    - web developer
+    - devops engineer
+    - site reliability engineer
+    - mobile developer
+    - android developer
+    - ios developer
+    - flutter developer
+    - react developer
+    - python developer
+    - junior developer
+    - engineer
+    - developer
+    - programmer
+
+  data:
+    - data engineer
+    - data scientist
+    - data analyst
+    - analytics engineer
+    - business intelligence
+    - bi analyst
+    - data architect
+    - data
+    - machine learning ops
+    - mlops
+
+  ai_ml:
+    - ai engineer
+    - ml engineer
+    - machine learning engineer
+    - llm engineer
+    - ai/ml
+    - ai researcher
+    - ml researcher
+    - deep learning
+    - nlp engineer
+    - prompt engineer
+    - generative ai
+    - research engineer
+    - data scientist
+
+  leadership:
+    - founder
+    - co-founder
+    - ceo
+    - chief executive officer
+    - cto
+    - chief technology officer
+    - vp engineering
+    - vice president engineering
+    - engineering manager
+    - head of engineering
+    - head of product
+    - head of sales
+    - head of marketing
+    - chief
+    - coo
+    - managing director
+    - director
+    - team lead
+    - tech lead
+    - lead developer
+    - product manager
+    - scrum master
+    - manager
+
+  consulting:
+    - consultant
+    - consulting
+    - conseil
+    - architect
+
+  sales_marketing:
+    - sales
+    - account executive
+    - business development
+    - bd manager
+    - marketing
+    - growth
+    - commercial
+    - business developer
+    - community
+
+  academia:
+    - professor
+    - lecturer
+    - enseignant
+    - chercheur
+    - researcher
+    - doctorant
+    - phd
+    - postdoc
+
+  student:
+    - student
+    - ingénieur d'état
+    - ingenierie
+    - engineering student
+    - computer science student
+    - cs student
+    - master
+    - apprenti
+    - intern
+    - stage
+    - apprentice
+
+company_types:
+  university:
+    - ecole
+    - école
+    - university
+    - université
+    - universite
+    - institut
+    - institute
+    - ensi
+    - emsi
+    - ensam
+    - ensea
+    - inpt
+    - polytechnique
+    - college
+    - campus
+    - faculty
+    - school
+    - lycée
+    - lycee
+    - sup
+    - esca
+    - ofppt
+
+  government:
+    - ministère
+    - ministere
+    - ministry
+    - mairie
+    - commune
+    - agence nationale
+    - gouvernorat
+    - administration publique
+    - public
+    - département
+    - departement
+
+  research:
+    - cnrs
+    - inria
+    - laboratoire
+    - laboratory
+    - labo
+    - inserm
+    - research center
+    - centre de recherche
+    - think tank
+
+  consulting:
+    - consulting
+    - conseil
+    - advisory
+    - cabinet
+    - partners
+    - "& associates"
+    - "and associates"
+
+  startup:
+    - startup
+    - incubator
+    - accelerator
+    - labs
+    - venture
+    - y combinator
+    - seed
+
+  technology:
+    - tech
+    - software
+    - digital
+    - data
+    - ai
+    - cloud
+    - saas
+    - platform
+    - systems
+    - solutions
+    - solus
+    - dev
+    - code
+    - cyber
+    - network
+    - telecom
+    - it
+    - informatique
+    - technologies
+    - engineering
+    - sas
+    - sa
+    - sarl
+    - group
+    - groupe
+
+  enterprise:
+    - group
+    - groupe
+    - holding
+    - industries
+    - bank
+    - banque
+    - assurance
+    - insurance
+    - auto
+    - industrie
+    - manufactur
+    - maroc
+    - morocco
+    - international
+
+  healthcare:
+    - health
+    - medical
+    - clinic
+    - hôpital
+    - hopital
+    - pharma
+    - biotech

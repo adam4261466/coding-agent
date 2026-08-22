@@ -1,0 +1,31 @@
+# --- Personal / private data: NEVER commit ---
+# LinkedIn account export (connections, messages, phone numbers...)
+linkedin_export/
+# Prospect databases (scraped profiles, outreach history)
+linkedin_intelligence/db/
+# Generated research reports derived from prospect data
+linkedin_intelligence/data/
+
+# --- Secrets / env ---
+.env
+.env.*
+*.secret
+
+# --- Logs & generated output ---
+*.log
+output.txt
+planner_output.txt
+ALL_SOURCE_FILES.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

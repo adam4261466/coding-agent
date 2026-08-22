@@ -1,0 +1,36 @@
+# Phase 3 campaign configuration. Behavior is data-driven, never hardcoded.
+# The developer edits these files; Python only reads them.
+
+campaign:
+  name: AI Engineers Morocco
+  objective: activated_signup
+
+target:
+  segments:
+    - ai_ml_high_icp
+    - data_high_icp
+    - document_heavy_problem
+    - unsegmented
+  max_per_company: 2
+
+strategy:
+  primary: conversation_first
+  alternatives:
+    - problem_first
+    - warm_relationship
+
+limits:
+  max_new_prospects_per_batch: 10
+  min_evidence_confidence: 0
+  min_priority: 0
+  contact_cooldown_days: 60
+
+sequence:
+  follow_up_days: [3, 7, 14]
+  max_follow_ups: 2
+
+approval:
+  required: true
+
+attribution:
+  source: linkedin

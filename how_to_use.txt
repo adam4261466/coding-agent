@@ -1,0 +1,14 @@
+1- run pahse12.py
+    linkedin_intelligence/
+        ├── db/linkedin_intelligence.sqlite   (everything lives here)
+        ├── data/intelligence/
+        │   └── segments_research.json        (Phase 2 only)
+        └── data/reports/
+            ├── final_report.json             (Phase 2 only)
+            └── final_report.md               (Phase 2 only)
+2- run python phase3.py --approve-all
+3- run phase3.py 
+4- Select AI Engineers Morocco from the campaign dropdown
+5- Set Limit to 5
+6- Click "Assign" → assigns the prospect to the campaign
+7- Click "Generate" → creates the message draft (needs Ollama running)

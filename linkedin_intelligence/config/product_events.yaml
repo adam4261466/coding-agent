@@ -1,0 +1,16 @@
+# Product event definitions. Activation is what actually demonstrates value;
+# a signup is NOT a user. The developer edits this file.
+
+activation:
+  required_events:
+    - account_created
+    - first_document_uploaded
+    - first_successful_query
+
+# Ordered stage events for the website funnel (used by attribution/analytics).
+funnel_events:
+  visit: visit
+  signup_started: signup_started
+  signed_up: signed_up
+  activated: activated
+  customer: customer

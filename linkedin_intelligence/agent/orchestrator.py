@@ -1,0 +1,226 @@
+"""Agent orchestrator: runs the full pipeline in a closed loop.
+
+The orchestrator is the main loop that ties everything together:
+  1. Load task state (crash recovery)
+  2. Build context from memory
+  3. Ask the planner what to do
+  4. Execute the decision
+  5. Record new events
+  6. Update state
+  7. Take snapshot
+  8. Repeat
+
+The agent runs in two modes:
+  - auto (default): executes actions without human approval
+  - manual: plans but requires human approval before execution
+"""
+
+import time
+from datetime import datetime, timezone
+
+from ..automation.memory.memory_service import MemoryService
+from ..automation.monitoring.eligibility import sweep_all
+from ..automation.actions.browser_executor import BrowserExecutor
+from .planner import plan_next_action
+from .executor import execute_plan
+
+
+DEFAULT_MODEL = "qwen3.5:0.8b"
+DEFAULT_BASE_URL = "http://localhost:11434"
+
+
+class AgentOrchestrator:
+    def __init__(self, store, memory: MemoryService = None,
+                 browser: BrowserExecutor = None,
+                 model: str = DEFAULT_MODEL,
+                 base_url: str = DEFAULT_BASE_URL,
+                 mode: str = "auto",
+                 dry_run: bool = False,
+                 max_cycles: int = None,
+                 cycle_delay: int = 60):
+        self.store = store
+        self.memory = memory or MemoryService(store.path.replace(".db", "_agent.db"))
+        self.browser = browser or BrowserExecutor(model=model, base_url=base_url)
+        self.model = model
+        self.base_url = base_url
+        self.mode = mode
+        self.dry_run = dry_run
+        self.max_cycles = max_cycles
+        self.cycle_delay = cycle_delay
+        self._cycle_count = 0
+
+    def run(self):
+        """Main agent loop. Runs until max_cycles or interrupted."""
+        self._recover_or_init()
+        self.memory.record_event("agent_start", data={
+            "mode": self.mode, "dry_run": self.dry_run,
+            "max_cycles": self.max_cycles})
+        print(f"[agent] Starting in {self.mode} mode "
+              f"(dry_run={self.dry_run})")
+
+        try:
+            while True:
+                self._cycle_count += 1
+                if self.max_cycles and self._cycle_count > self.max_cycles:
+                    print(f"[agent] Reached max cycles ({self.max_cycles})")
+                    break
+
+                print(f"\n[agent] === Cycle {self._cycle_count} ===")
+                results = self._run_one_cycle()
+
+                if results.get("handoffs", 0) > 0:
+                    print(f"[agent] {results['handoffs']} handoff(s) "
+                          f"requested — waiting for human")
+
+                if results.get("work_done", 0) == 0:
+                    print(f"[agent] No work available, sleeping "
+                          f"{self.cycle_delay}s")
+                    time.sleep(self.cycle_delay)
+                else:
+                    time.sleep(2)
+
+        except KeyboardInterrupt:
+            print("\n[agent] Interrupted by user")
+        finally:
+            self.memory.record_event("agent_stop",
+                                      data={"cycles": self._cycle_count})
+            print(f"[agent] Stopped after {self._cycle_count} cycles")
+            if self.browser:
+                try:
+                    self.browser.close()
+                except Exception as e:
+                    print(f"[agent] Browser cleanup error: {e}")
+            self._print_summary()
+
+    def run_once(self) -> dict:
+        """Run a single cycle. Returns the cycle results."""
+        self._cycle_count += 1
+        return self._run_one_cycle()
+
+    def _recover_or_init(self):
+        """On start: recover from last snapshot or initialize from store."""
+        active = self.memory.tasks.active_tasks()
+        if active:
+            print(f"[agent] Recovered {len(active)} active task(s)")
+            for t in active:
+                p = self.memory.state.get_state(t["prospect_id"])
+                name = (p.get("identity", {}).get("name")
+                        or t["prospect_id"])
+                print(f"  - {name}: {t['goal']} "
+                      f"({len(t.get('completed', []))} done, "
+                      f"{len(t.get('pending', []))} pending)")
+
+    def _run_one_cycle(self) -> dict:
+        """Execute one full cycle of the agent loop."""
+        work_items = sweep_all(self.store)
+        handoffs = 0
+        work_done = 0
+        actions = []
+
+        for item in work_items:
+            prospect_id = item["prospect_id"]
+            campaign_id = item["campaign_id"]
+            campaign = item.get("campaign") or self.store.get_campaign(campaign_id)
+            prospect = self.store.get_prospect(prospect_id)
+            if not prospect or not campaign:
+                continue
+
+            ctx = self.memory.get_prospect_context(prospect_id)
+            name = (ctx.get("state", {}).get("identity", {}).get("name")
+                    or prospect_id)
+            print(f"[agent] Processing {name} "
+                  f"(reason: {item['reason']})")
+
+            plan = plan_next_action(
+                self.memory, prospect, campaign,
+                eligibility=item.get("eligibility_checks"),
+                outreach_state=item.get("cp", {}).get("status"),
+                model=self.model, base_url=self.base_url)
+
+            print(f"[agent]   Plan: {plan.get('action')} — "
+                  f"{plan.get('reason', '')}")
+
+            if self.dry_run:
+                actions.append({"prospect_id": prospect_id,
+                                "campaign_id": campaign_id,
+                                "plan": plan, "executed": False})
+                self.memory.record_event("dry_run", prospect_id, campaign_id,
+                                         data={"action": plan.get("action"),
+                                               "reason": plan.get("reason")})
+                work_done += 1
+                continue
+
+            if self.mode == "manual" and plan.get("action") not in (
+                    "wait", "skip"):
+                action = plan.get("action")
+                reason = plan.get("reason", "")
+                print(f"\n[manual] Proposed action: {action}")
+                print(f"[manual]   Reason: {reason}")
+                if plan.get("params"):
+                    print(f"[manual]   Params: {plan.get('params')}")
+                print(f"[manual] Options: [y] execute  [n] skip  [h] handoff (human)")
+                choice = input("[manual] Your choice: ").strip().lower()
+
+                if choice == "y":
+                    pass  # fall through to execute below
+                elif choice == "h":
+                    self.memory.record_event("handoff_requested",
+                                             prospect_id, campaign_id,
+                                             data={"reason": "manual_approval",
+                                                   "plan": plan})
+                    handoffs += 1
+                    actions.append({"prospect_id": prospect_id,
+                                    "campaign_id": campaign_id,
+                                    "plan": plan, "executed": False,
+                                    "handoff": True})
+                    print("[manual]   -> Handoff recorded.")
+                    continue
+                else:
+                    self.memory.record_event("agent_skip", prospect_id,
+                                             campaign_id,
+                                             data={"reason": "manual_skip",
+                                                   "plan": plan})
+                    actions.append({"prospect_id": prospect_id,
+                                    "campaign_id": campaign_id,
+                                    "plan": plan, "executed": False})
+                    print("[manual]   -> Skipped.")
+                    continue
+
+            result = execute_plan(
+                self.store, self.memory, self.browser,
+                prospect, campaign, plan,
+                model=self.model, base_url=self.base_url)
+
+            actions.append({"prospect_id": prospect_id,
+                            "campaign_id": campaign_id,
+                            "plan": plan, "result": result,
+                            "executed": True})
+            work_done += 1
+
+            if result.get("status") == "handed_off":
+                handoffs += 1
+
+            self.memory.save_snapshot(prospect_id)
+
+            status = result.get("status", "unknown")
+            print(f"[agent]   Result: {status}")
+            if status == "error":
+                print(f"[agent]   ERROR DETAIL: {result.get('error', 'no detail')}")
+
+        return {
+            "cycle": self._cycle_count,
+            "work_items": len(work_items),
+            "work_done": work_done,
+            "handoffs": handoffs,
+            "actions": actions,
+        }
+
+    def _print_summary(self):
+        print(f"\n[agent] Summary:")
+        print(f"  Cycles: {self._cycle_count}")
+        active = self.memory.tasks.active_tasks()
+        print(f"  Active tasks: {len(active)}")
+        pending = self.memory.events.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type = 'handoff_requested'"
+        ).fetchone()[0]
+        print(f"  Pending handoffs: {pending}")

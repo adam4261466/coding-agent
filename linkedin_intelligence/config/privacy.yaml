@@ -1,0 +1,40 @@
+# Privacy / data-minimization configuration.
+#
+# Phase 1 builds structured prospect records. Anything not listed as a
+# permitted prospect field is never exposed to an LLM, and the corresponding
+# raw files are excluded from intelligence outputs entirely.
+
+# Raw export files that are NEVER used for prospecting (own account data,
+# ad targeting, credentials, etc.).
+excluded_files:
+  - Ad_Targeting.csv
+  - Advertisers.csv
+  - Email Addresses.csv
+  - PhoneNumbers.csv
+  - Registration.csv
+  - Rich_Media.csv
+  - SavedJobAlerts.csv
+  - Profile.csv
+  - Profile Summary.csv
+  - Jobs
+
+# Fields that may appear in an LLM-facing prospect record.
+allowed_prospect_fields:
+  - prospect_id
+  - name
+  - role
+  - company
+  - relationship
+  - scores
+  - segments
+  - research_mode
+  - selection_reasons
+  - evidence
+  - allowed_actions
+  - conversation_summary
+  - qualification_fit
+  - qualification_confidence
+
+# Conversation content handling: 0 = no raw text is stored or exposed,
+# N > 0 = keep at most N characters of the last message as a summary hint.
+conversation_summary_chars: 300
