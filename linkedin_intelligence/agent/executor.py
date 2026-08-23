@@ -144,46 +144,170 @@ def _execute_produce_message(store, memory, prospect, campaign,
 
 def _execute_approve_message(store, memory, prospect, campaign,
                              plan, params) -> dict:
-    """Auto-approve the latest validated message for this prospect."""
+    """Auto-approve the latest validated message for this prospect.
+
+    IMPORTANT:
+    The validator stores successfully validated messages with status
+    ``approved``. The approval action then moves that message to
+    ``approved_to_send``.
+
+    Older code only looked for ``generated`` / ``pending_review``, which
+    caused every MESSAGE_REVIEW task to become ``skipped`` even though a
+    valid message was sitting in the approval queue.
+    """
+
     prospect_id = prospect["prospect_id"]
     campaign_id = campaign["campaign_id"]
 
-    msgs = store.messages_for(prospect_id=prospect_id, campaign_id=campaign_id)
-    pending = [m for m in msgs if m.get("status") in ("generated", "pending_review")]
-    already_approved = [m for m in msgs if m.get("status") == "approved_to_send"]
+    msgs = store.messages_for(
+        prospect_id=prospect_id,
+        campaign_id=campaign_id,
+    )
+
+    # 1. Already approved / ready to send.
+    already_approved = [
+        m for m in msgs
+        if m.get("status") == "approved_to_send"
+    ]
 
     if already_approved:
-        from ..outreach.state_machine import transition
+
+        msg = already_approved[-1]
+
         try:
-            cp = store.get_campaign_prospect(campaign_id, prospect_id)
+            cp = store.get_campaign_prospect(
+                campaign_id,
+                prospect_id,
+            )
+
             if cp and cp.get("status") != "APPROVED_TO_SEND":
-                transition(store, cp, "APPROVED_TO_SEND",
-                           event="already_approved",
-                           note=already_approved[-1].get("message_id"))
+                transition(
+                    store,
+                    cp,
+                    "APPROVED_TO_SEND",
+                    event="already_approved",
+                    note=msg.get("message_id"),
+                )
+
         except ValueError:
             pass
-        return {"status": "already_approved",
-                "message_id": already_approved[-1].get("message_id")}
+
+        # Complete the approval task too.
+        active_tasks = memory.tasks.active_tasks(
+            prospect_id=prospect_id
+        )
+
+        for task in active_tasks:
+            if task.get("goal") == "approve_message":
+
+                # Do not leave the task hanging forever.
+                if "human_approval" in task.get("pending", []):
+                    memory.tasks.complete_step(
+                        task["task_id"],
+                        "human_approval",
+                    )
+
+                break
+
+        return {
+            "status": "already_approved",
+            "message_id": msg.get("message_id"),
+        }
+
+    # 2. VALIDATED messages waiting for approval.
+    #
+    # validator.py assigns status="approved" when the message passes
+    # validation. This is the critical state that the old executor missed.
+    pending = [
+        m for m in msgs
+        if m.get("status") in (
+            "approved",
+            "generated",
+            "pending_review",
+        )
+    ]
+
     if not pending:
-        return {"status": "skipped", "reason": "no message to approve"}
+        return {
+            "status": "skipped",
+            "reason": "no validated message available for approval",
+        }
 
     msg = pending[-1]
-    try:
-        approve(store, msg["message_id"])
-        memory.events.record_action("approve_message", prospect_id)
-        memory.record_event("message_approved", prospect_id, campaign_id,
-                            data={"message_id": msg["message_id"]})
-        active = memory.tasks.active_tasks(prospect_id=prospect_id)
-        for t in active:
-            if t.get("goal") == "approve_message":
-                memory.tasks.complete_step(t["task_id"], "human_approval")
-                break
-        return {"status": "approved", "message_id": msg["message_id"]}
-    except Exception as exc:
-        memory.record_event("error", prospect_id, campaign_id,
-                            data={"error": str(exc), "action": "approve_message"})
-        return {"status": "error", "error": str(exc)}
 
+    try:
+
+        approved_msg = approve(
+            store,
+            msg["message_id"],
+        )
+
+        memory.events.record_action(
+            "approve_message",
+            prospect_id,
+            data={
+                "message_id": msg["message_id"],
+            },
+            success=True,
+        )
+
+        memory.record_event(
+            "message_approved",
+            prospect_id,
+            campaign_id,
+            data={
+                "message_id": msg["message_id"],
+            },
+            source="agent",
+            confidence=1.0,
+        )
+
+        # Complete the task that originally requested approval.
+        active_tasks = memory.tasks.active_tasks(
+            prospect_id=prospect_id
+        )
+
+        for task in active_tasks:
+
+            if task.get("goal") != "approve_message":
+                continue
+
+            pending_steps = task.get(
+                "pending",
+                [],
+            )
+
+            if "human_approval" in pending_steps:
+                memory.tasks.complete_step(
+                    task["task_id"],
+                    "human_approval",
+                )
+
+            break
+
+        return {
+            "status": "approved",
+            "message_id": msg["message_id"],
+            "message": approved_msg,
+        }
+
+    except Exception as exc:
+
+        memory.record_event(
+            "error",
+            prospect_id,
+            campaign_id,
+            data={
+                "error": str(exc),
+                "action": "approve_message",
+                "message_id": msg.get("message_id"),
+            },
+        )
+
+        return {
+            "status": "error",
+            "error": str(exc),
+        }
 
 def _execute_send_message(store, memory, browser, prospect, campaign,
                           plan, params) -> dict:

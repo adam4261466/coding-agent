@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Fully automatic LinkedIn outreach agent.
+"""Permission-gated LinkedIn outreach operator.
 
-Runs the complete pipeline in a closed loop:
-  discover -> research -> qualify -> segment -> produce -> execute -> monitor -> decide -> repeat
+Deterministic loop: QUEUE -> PERMISSION GATE -> OPERATOR (LLM only for
+language) -> MEMORY. The human decides who may be contacted and what may
+be done via per-prospect permission records; the agent only obeys.
 
 Usage:
-  python run_agent.py                    # auto mode, run until interrupted
-  python run_agent.py --dry-run          # plan only, no actions
-  python run_agent.py --manual           # plan + execute requires human approval
-  python run_agent.py --cycles 5         # run 5 cycles then stop
-  python run_agent.py --delay 120        # 120s between idle cycles
-  python run_agent.py --assign           # assign eligible prospects to campaigns
-  python run_agent.py --assign --limit 10 # assign up to 10 prospects
+  python run_agent.py                          # run until interrupted
+  python run_agent.py --dry-run                # plan only, no actions
+  python run_agent.py --cycles 5               # 5 ticks then stop
+  python run_agent.py --delay 120              # 120s idle sleep between ticks
+  python run_agent.py --permissions perms.json # load permissions, then exit
+  python run_agent.py --assign                 # assign prospects to campaigns
 """
 
 import argparse
+import json
 import os
 import sys
 import threading
@@ -28,10 +29,6 @@ if ROOT not in sys.path:
 from linkedin_intelligence.store import Store
 from linkedin_intelligence.utils import DB_PATH
 
-# ---------------------------------------------------------------------------
-# Inline debugging: prints to stderr and appends to agent_debug.log
-# (set AGENT_DEBUG=0 to disable)
-# ---------------------------------------------------------------------------
 _DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
 _LOG_PATH = os.path.join(ROOT, "agent_debug.log")
 
@@ -52,70 +49,105 @@ def _dbg(msg: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fully automatic LinkedIn outreach agent")
+        description="Permission-gated LinkedIn outreach operator")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Plan actions without executing them")
-    parser.add_argument("--manual", action="store_true",
-                        help="Require human approval before execution")
+                        help="Show gated actions without executing them")
     parser.add_argument("--cycles", type=int, default=None,
-                        help="Number of cycles to run (default: infinite)")
+                        help="Number of ticks to run (default: infinite)")
     parser.add_argument("--delay", type=int, default=60,
-                        help="Seconds between idle cycles (default: 60)")
-    parser.add_argument("--model", type=str, default="gemma4:31b-cloud",
-                        help="Model for planning (default: gemma4:31b-cloud)")
-    parser.add_argument("--browser-model", type=str, default="gemma4:31b-cloud",
-                        help="Model for browser actions (default: gemma4:31b-cloud)")
-    parser.add_argument("--base-url", type=str, default="http://localhost:11434",
+                        help="Seconds to sleep when idle (default: 60)")
+    parser.add_argument("--browser-model", type=str,
+                        default="gemma4:31b-cloud",
+                        help="Model for browser actions")
+    parser.add_argument("--base-url", type=str,
+                        default="http://localhost:11434",
                         help="Ollama base URL")
     parser.add_argument("--db", type=str, default=None,
                         help="Database path")
+    parser.add_argument("--permissions", type=str, default=None,
+                        help="Load per-prospect permissions JSON then exit")
     parser.add_argument("--assign", action="store_true",
-                        help="Assign eligible prospects to campaigns then run agent")
+                        help="Assign eligible prospects to campaigns")
     parser.add_argument("--limit", type=int, default=10,
-                        help="Max prospects to assign per campaign (default: 10)")
+                        help="Max prospects to assign per campaign")
     args = parser.parse_args()
-    _dbg(f"main() args: dry_run={args.dry_run} manual={args.manual} cycles={args.cycles} "
-         f"delay={args.delay} model={args.model} browser_model={args.browser_model} "
-         f"assign={args.assign}")
+    _dbg(f"main() args: dry_run={args.dry_run} cycles={args.cycles} "
+         f"permissions={args.permissions} assign={args.assign}")
 
     db_path = args.db or DB_PATH
     store = Store(db_path)
 
-    if args.assign:
-        _run_assign(store, args.limit)
-        store.close()
-        return
-
-    from linkedin_intelligence.automation.memory.memory_service import MemoryService
-    from linkedin_intelligence.automation.actions.browser_executor import BrowserExecutor
-    from linkedin_intelligence.agent.orchestrator import AgentOrchestrator
-
-    memory = MemoryService(db_path)
-    browser = BrowserExecutor(model=args.browser_model, base_url=args.base_url)
-    mode = "manual" if args.manual else "auto"
-
-    orchestrator = AgentOrchestrator(
-        store=store, memory=memory, browser=browser,
-        model=args.model, base_url=args.base_url,
-        mode=mode, dry_run=args.dry_run,
-        max_cycles=args.cycles, cycle_delay=args.delay,
-    )
-
-    print(f"[run_agent] Database: {db_path}")
-    print(f"[run_agent] Mode: {mode}")
-    print(f"[run_agent] Dry run: {args.dry_run}")
-    print(f"[run_agent] Browser model: {args.browser_model}")
-    print()
-
     try:
-        orchestrator.run()
-        _dbg("orchestrator.run() finished normally")
-    except Exception as e:
-        _dbg(f"EXCEPTION orchestrator.run(): {e}\n{traceback.format_exc()}")
-        raise
+        if args.permissions:
+            _load_permissions(store, args.permissions)
+            return
+
+        if args.assign:
+            _run_assign(store, args.limit)
+            return
+
+        from linkedin_intelligence.automation.memory.memory_service import \
+            MemoryService
+        from linkedin_intelligence.automation.actions.browser_executor import \
+            BrowserExecutor
+        from linkedin_intelligence.agent.operator import AgentOperator
+
+        memory = MemoryService(db_path)
+        browser = BrowserExecutor(model=args.browser_model,
+                                  base_url=args.base_url)
+        operator = AgentOperator(
+            store=store, memory=memory, browser=browser,
+            base_url=args.base_url, dry_run=args.dry_run,
+            max_cycles=args.cycles, cycle_delay=args.delay)
+
+        summary = operator.queue.summary()
+        print(f"[run_agent] Database: {db_path}")
+        print(f"[run_agent] Queue: {summary['allowed']} allowed | "
+              f"{summary['manual']} manual review | "
+              f"{summary['blocked']} blocked")
+        print(f"[run_agent] Dry run: {args.dry_run}")
+        print()
+
+        try:
+            operator.run()
+            _dbg("operator.run() finished normally")
+        except Exception as e:
+            _dbg(f"EXCEPTION operator.run(): {e}\n{traceback.format_exc()}")
+            raise
+        finally:
+            memory.close()
     finally:
         store.close()
-        memory.close()
+
+
+def _load_permissions(store, path: str):
+    from linkedin_intelligence.agent.permissions import (
+        load_json, PERMISSION_FLAGS)
+    records = load_json(path)
+    applied = 0
+    for pid, spec in records.items():
+        prospect = store.get_prospect(pid)
+        if not prospect:
+            matches = [p for p in store.prospects()
+                       if p.get("full_name") == pid]
+            if len(matches) == 1:
+                pid = matches[0]["prospect_id"]
+                prospect = matches[0]
+        if not prospect:
+            print(f"[permissions] WARNING: no prospect for {pid!r}, skipped")
+            continue
+        flag_subset = {k: v for k, v in spec.items()
+                       if k in PERMISSION_FLAGS}
+        record = store.set_permission(pid, permission=spec["permission"],
+                                      flags=flag_subset,
+                                      notes=spec.get("notes"))
+        applied += 1
+        flags_on = ", ".join(
+            k for k in ("view_profile", "send_connection", "send_message",
+                        "reply", "follow_up") if record[k])
+        print(f"[permissions] {prospect.get('full_name', pid)}: "
+              f"{record['permission']} ({flags_on})")
+    print(f"[permissions] {applied}/{len(records)} applied")
 
 
 def _run_assign(store, limit):
@@ -154,7 +186,7 @@ def _run_assign(store, limit):
         result = assign_batch(store, campaign, available, limit=limit)
         print(f"  Eligible: {result['eligible']}")
         print(f"  Assigned: {result['assigned']}")
-        print(f"  Started ( MESSAGE_PENDING): {result['started']}")
+        print(f"  Started (MESSAGE_PENDING): {result['started']}")
 
 
 if __name__ == "__main__":

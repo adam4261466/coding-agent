@@ -130,7 +130,17 @@ class BrowserExecutor:
         finally:
             base_agent.MAX_AGENT_STEPS = original_max
 
+        aborted = _abort_reason(result)
+        if aborted:
+            return {"success": False, "error": aborted, "observations": []}
         observations = _extract_json(result)
+        if not observations:
+            # The agent finished but never returned the required JSON -
+            # treat as a failed observation rather than inventing success.
+            return {"success": False,
+                    "error": f"no JSON findings in agent output: "
+                             f"{result[:300]}",
+                    "observations": []}
         return {
             "success": True,
             "observations": observations.get("findings", []),
@@ -153,6 +163,10 @@ class BrowserExecutor:
         finally:
             base_agent.MAX_AGENT_STEPS = original_max
 
+        aborted = _abort_reason(result)
+        if aborted:
+            return {"success": False, "description": result[:2000],
+                    "error": aborted}
         parsed = _extract_json(result)
         return {
             "success": parsed.get("success", False),
@@ -173,6 +187,20 @@ class BrowserExecutor:
             except Exception:
                 pass
         self._agent = None
+
+
+def _abort_reason(text: str) -> str | None:
+    """Detect the base agent's abort outputs. run() returns the raw error
+    string when the LLM is unreachable, which contains no JSON - without
+    this check an unreachable model looked like a successful action."""
+    if not text:
+        return "empty agent output"
+    markers = ("Cannot connect to Ollama", "LLM error",
+               "Is it running?", "ABORT")
+    for m in markers:
+        if m in text:
+            return f"agent aborted: {text[:300]}"
+    return None
 
 
 def _extract_json(text: str) -> dict:

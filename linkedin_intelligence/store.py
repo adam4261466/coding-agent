@@ -211,6 +211,22 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Phase 5: human-owned contact permissions. The agent never decides WHO it
+-- may contact or WHAT it may do to them; it reads this table. A missing row
+-- means "manual review" (the safe default).
+CREATE TABLE IF NOT EXISTS agent_permissions (
+    prospect_id TEXT PRIMARY KEY,
+    permission TEXT NOT NULL DEFAULT 'manual',
+    view_profile INTEGER NOT NULL DEFAULT 0,
+    send_connection INTEGER NOT NULL DEFAULT 0,
+    send_message INTEGER NOT NULL DEFAULT 0,
+    reply INTEGER NOT NULL DEFAULT 0,
+    follow_up INTEGER NOT NULL DEFAULT 0,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    updated_at TEXT
+);
 """
 
 
@@ -244,7 +260,7 @@ class Store:
                       "human_feedback", "campaigns", "campaign_prospects",
                       "outreach_messages", "outreach_events",
                       "outreach_conversations", "product_events",
-                      "experiments"):
+                      "experiments", "agent_permissions"):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()
 
@@ -824,6 +840,65 @@ class Store:
             "WHERE experiment_id = ?",
             (json.dumps(merged, ensure_ascii=False), new_status, experiment_id))
         self.conn.commit()
+
+    # ---- agent permissions (Phase 5: human-owned contact rules) ----
+    def set_permission(self, prospect_id: str, permission: str = None,
+                       flags: dict = None, notes: str = None):
+        """Upsert one prospect's contact permissions.
+
+        `permission` is 'allowed' | 'manual' | 'blocked'. `flags` is a
+        partial dict of {view_profile, send_connection, send_message,
+        reply, follow_up} booleans; omitted keys keep their current value.
+        Setting permission='blocked' also sets the blocked flag; setting
+        'allowed' or 'manual' clears it.
+        """
+        current = self.get_permissions(prospect_id)
+        if permission is not None:
+            permission = str(permission).lower()
+            if permission not in ("allowed", "manual", "blocked"):
+                raise ValueError(
+                    f"permission must be allowed/manual/blocked, got {permission!r}")
+            current["permission"] = permission
+            current["blocked"] = 1 if permission == "blocked" else 0
+        for key, value in (flags or {}).items():
+            if key not in ("view_profile", "send_connection", "send_message",
+                           "reply", "follow_up"):
+                raise ValueError(f"unknown permission flag: {key}")
+            current[key] = 1 if value else 0
+        if notes is not None:
+            current["notes"] = notes
+        self.conn.execute(
+            """INSERT OR REPLACE INTO agent_permissions
+               (prospect_id, permission, view_profile, send_connection,
+                send_message, reply, follow_up, blocked, notes, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (prospect_id, current["permission"],
+             current["view_profile"], current["send_connection"],
+             current["send_message"], current["reply"], current["follow_up"],
+             current["blocked"], current.get("notes"),
+             datetime.now(timezone.utc).isoformat()))
+        self.conn.commit()
+        return self.get_permissions(prospect_id)
+
+    def get_permissions(self, prospect_id: str) -> dict:
+        """Full permission record with safe defaults. No row means
+        'manual' with every flag off."""
+        row = self.conn.execute(
+            "SELECT * FROM agent_permissions WHERE prospect_id = ?",
+            (prospect_id,)).fetchone()
+        if not row:
+            return {"prospect_id": prospect_id, "permission": "manual",
+                    "view_profile": 0, "send_connection": 0,
+                    "send_message": 0, "reply": 0, "follow_up": 0,
+                    "blocked": 0, "notes": None, "updated_at": None}
+        d = dict(row)
+        d["prospect_id"] = prospect_id
+        return d
+
+    def all_permissions(self) -> list:
+        rows = self.conn.execute(
+            "SELECT * FROM agent_permissions ORDER BY updated_at").fetchall()
+        return [dict(r) for r in rows]
 
     # ---- segments ----
     def save_segment(self, name: str, description: str, prospects: list):
