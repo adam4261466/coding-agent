@@ -1,11 +1,32 @@
 import json
 import re
 import sys
+import threading
+import traceback
 import requests
 import time
 import os
+from datetime import datetime
 from tools import TOOLS, CUSTOM_TOOLS, delete_tool, cleanup_tools
-import debug_log
+
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [agent] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 SYSTEM_PROMPT = """You are an autonomous WEB NAVIGATION agent that answers questions about websites by driving a real browser (Chrome) step by step.
@@ -66,6 +87,7 @@ TIMEOUT = 600
 
 class Agent:
     def __init__(self, model="gemma4:31b-cloud", base_url="http://localhost:11434"):
+        _dbg(f"Agent.__init__ model={model} base_url={base_url}")
         self._model = model
         self.base_url = base_url
         self.messages = []
@@ -79,6 +101,7 @@ class Agent:
 
     @model.setter
     def model(self, value: str):
+        _dbg(f"model changed: {self._model} -> {value}")
         self._model = value
 
     def _init_system(self):
@@ -99,6 +122,7 @@ class Agent:
         return schemas
 
     def _call_llm(self, messages):
+        start = time.time()
         payload = {
             "model": self.model,
             "messages": messages,
@@ -106,9 +130,13 @@ class Agent:
             "stream": False,
             "options": {"num_ctx": 16384, "temperature": 0.3},
         }
-
-        start = time.time()
-        debug_log.log_llm_request(payload)
+        _dbg(f"_call_llm START model={self.model} base_url={self.base_url} "
+             f"n_messages={len(messages)} n_tools={len(payload['tools'])}")
+        try:
+            _dbg("LLM REQUEST:\n" + json.dumps(
+                {**payload, "messages": messages[-4:]}, ensure_ascii=False, default=str)[:4000])
+        except Exception:
+            pass
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -116,7 +144,9 @@ class Agent:
                 timeout=TIMEOUT,
             )
             elapsed = time.time() - start
-            debug_log.log_llm_response(resp.status_code, resp.text, round(elapsed, 1))
+            _dbg(f"LLM RESPONSE status={resp.status_code} elapsed={elapsed:.1f}s "
+                 f"bytes={len(resp.text)}")
+            _dbg("LLM BODY:\n" + resp.text[:4000])
 
             if resp.status_code != 200:
                 detail = resp.text[:500]
@@ -124,14 +154,16 @@ class Agent:
                     detail = resp.json().get("error", detail)
                 except Exception:
                     pass
-                debug_log.log_info(
-                    f"Ollama {resp.status_code} error. model={self.model} "
-                    f"base_url={self.base_url} num_messages={len(messages)}"
-                )
+                _dbg(f"Ollama {resp.status_code} error. model={self.model} "
+                     f"base_url={self.base_url} num_messages={len(messages)} "
+                     f"detail={detail}")
                 return {"error": f"Ollama returned {resp.status_code}: {detail}"}
 
             data = resp.json()
             message = data.get("message", {})
+            n_calls = len(message.get("tool_calls", []) or [])
+            _dbg(f"_call_llm OK content_len={len(message.get('content', ''))} "
+                 f"tool_calls={n_calls}")
 
             return {
                 "content": message.get("content", ""),
@@ -140,31 +172,33 @@ class Agent:
             }
 
         except requests.exceptions.ConnectionError as e:
-            debug_log.log_exception("_call_llm (ConnectionError)", e)
+            _dbg(f"EXCEPTION _call_llm (ConnectionError): {e}\n{traceback.format_exc()}")
             return {"error": "Cannot connect to Ollama. Is it running?"}
         except requests.exceptions.Timeout as e:
-            debug_log.log_exception("_call_llm (Timeout)", e)
+            _dbg(f"EXCEPTION _call_llm (Timeout after {TIMEOUT}s): {e}\n{traceback.format_exc()}")
             return {"error": f"Timed out after {TIMEOUT}s."}
         except Exception as e:
-            debug_log.log_exception("_call_llm", e)
+            _dbg(f"EXCEPTION _call_llm: {e}\n{traceback.format_exc()}")
             return {"error": f"Error: {e}"}
 
     def _execute_tool(self, name: str, args: dict) -> str:
         if name not in TOOLS:
-            debug_log.log_info(f"Unknown tool requested: {name}")
+            _dbg(f"Unknown tool requested: {name}")
             return f"Error: unknown tool '{name}'"
+        _dbg(f"_execute_tool {name} args={json.dumps(args, ensure_ascii=False, default=str)[:500]}")
         try:
             result = TOOLS[name]["function"](**args)
             if len(result) > 1000000:
                 result = result[:1000000] + "\n... (truncated)"
             if name in CUSTOM_TOOLS:
                 delete_tool(name)
-            debug_log.log_tool_call(name, args, result)
+            _dbg(f"_execute_tool {name} OK len={len(result)} "
+                 f"result={result[:300]!r}")
             return result
         except Exception as e:
             if name in CUSTOM_TOOLS:
                 delete_tool(name)
-            debug_log.log_exception(f"_execute_tool:{name}", e)
+            _dbg(f"EXCEPTION _execute_tool:{name}: {e}\n{traceback.format_exc()}")
             return f"Error executing {name}: {e}"
 
     def _needs_permission(self, tool_name: str, args: dict) -> bool:
@@ -185,6 +219,7 @@ class Agent:
             m["images"] = []
 
     def run(self, user_message: str, permission_callback=None) -> str:
+        _dbg(f"run() START user_message={user_message!r}")
         self._prune_stale_images(keep=1)
         self._last_action = None
         self._repeat_count = 0
@@ -192,12 +227,14 @@ class Agent:
         self.messages.append({"role": "user", "content": user_message})
 
         for step in range(MAX_AGENT_STEPS):
+            _dbg(f"--- run() step {step + 1}/{MAX_AGENT_STEPS} ---")
             sys.stdout.write(f"\033[90m[step {step+1}] thinking...\033[0m ")
             sys.stdout.flush()
 
             response = self._call_llm(self.messages)
 
             if "error" in response:
+                _dbg(f"run() ABORT: LLM error -> {response['error']}")
                 return response["error"]
 
             content = response.get("content", "")
@@ -210,6 +247,7 @@ class Agent:
                 print(f"{content}")
 
             if not tool_calls:
+                _dbg(f"run() DONE (no more tool calls) content_len={len(content)}")
                 self.messages.append({"role": "assistant", "content": content})
                 return content
 
@@ -236,6 +274,7 @@ class Agent:
                     action_desc = f"{name}({json.dumps(args, ensure_ascii=False)[:200]})"
                     approved = permission_callback(action_desc)
                     if not approved:
+                        _dbg(f"PERMISSION DENIED by user: {action_desc}")
                         self.messages.append({
                             "role": "tool",
                             "tool_call_id": tc.get("id", ""),
@@ -251,6 +290,7 @@ class Agent:
                     self._last_action = action_key
                     self._repeat_count = 1
                 if self._repeat_count >= 3:
+                    _dbg(f"LOOP DETECTED: {name} repeated {self._repeat_count}x - stopping")
                     print(f"  \033[31m! {name} repeated {self._repeat_count}x in a row with no "
                           f"page change - stopping loop\033[0m")
                     return (f"Stopped after repeating the same action ({name} {json.dumps(args)}) "
@@ -268,9 +308,11 @@ class Agent:
                     "content": result,
                 })
 
+        _dbg("run() STOPPED: max steps reached")
         return "(max steps reached)"
 
     def clear(self):
+        _dbg("clear() conversation reset")
         cleanup_tools()
         self.messages = []
         self._init_system()

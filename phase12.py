@@ -16,12 +16,37 @@ DEFAULTS dict near the top if you need to change one permanently.
 
 import contextlib
 import json
+import os
 import queue
 import sys
 import threading
 import tkinter as tk
+import traceback
 from tkinter import ttk, scrolledtext, messagebox
 from datetime import datetime, timezone
+
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [phase12] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +129,13 @@ def print_json(data):
 # ---------------------------------------------------------------------------
 
 def run_phase1_step(source_dir):
+    _dbg(f"run_phase1_step source_dir={source_dir!r}")
     print_header("PHASE 1 — OFFLINE PROSPECT INTELLIGENCE")
     print(f"[phase1] source directory: {source_dir}")
     print("[phase1] starting ingestion...")
 
     summary = run_phase1(source_dir=source_dir, verbose=True)
+    _dbg(f"run_phase1_step OK summary_keys={list(summary.keys()) if isinstance(summary, dict) else type(summary)}")
 
     print()
     print("=" * 52)
@@ -141,6 +168,8 @@ def run_phase2_step(
     calibrate=DEFAULTS["calibrate"],
 ):
     """Run Phase 2, restricted to prospects matching the filter."""
+    _dbg(f"run_phase2_step batch_type={batch_type} top={top} min_score={min_score} "
+         f"model={model} url={url} offline={offline} no_llm={no_llm}")
 
     print_header("PHASE 2 — RESEARCH + QUALIFICATION + SEGMENTATION")
     print(
@@ -213,6 +242,8 @@ def run_phase2_step(
                         task, prospect, model=model, base_url=url, store=store,
                     )
                 except Exception as exc:
+                    _dbg(f"EXCEPTION run_research for {prospect['prospect_id']}: {exc}\n"
+                         f"{traceback.format_exc()}")
                     research_result = {"findings": [], "error": str(exc)}
                     print(f"         browser research failed: {exc}")
 
@@ -253,6 +284,8 @@ def run_phase2_step(
                         evidence=evidence, research_mode=research_mode, timeout=timeout,
                     )
                 except Exception as exc:
+                    _dbg(f"EXCEPTION qualify for {prospect['prospect_id']}: {exc}\n"
+                         f"{traceback.format_exc()}")
                     print(f"         qualification failed: {exc}")
                     q = {
                         "fit_score": int(round(prospect.get("total_score", 0))),
@@ -323,6 +356,7 @@ def run_phase2_step(
             })
 
         # 6. Segment researched prospects
+        _dbg(f"run_phase2_step: qualifying done, segmenting {len(results)} results")
         reviewed = [
             p for p in store.prospects()
             if p.get("status") in (
@@ -374,6 +408,9 @@ def run_phase2_step(
             "calibration_report": calibration_report,
         }
 
+    except Exception as exc:
+        _dbg(f"EXCEPTION run_phase2_step (fatal): {exc}\n{traceback.format_exc()}")
+        raise
     finally:
         store.close()
 
@@ -385,6 +422,8 @@ def run_phase2_step(
 def run_full_pipeline(
     source_dir, batch_type, top, min_score,
 ):
+    _dbg(f"run_full_pipeline source_dir={source_dir!r} batch_type={batch_type} "
+         f"top={top} min_score={min_score}")
     print_header("LINKEDIN INTELLIGENCE — PHASE 1 + PHASE 2")
     print("[pipeline] Phase 1 will run first.")
 
@@ -543,6 +582,7 @@ class PipelineGUI:
         self.worker_thread.start()
 
     def _worker(self, batch_type, top, min_score):
+        _dbg(f"_worker thread started batch_type={batch_type} top={top} min_score={min_score}")
         writer = QueueWriter(self.output_queue)
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
             try:
@@ -552,7 +592,9 @@ class PipelineGUI:
                     top=top,
                     min_score=min_score,
                 )
+                _dbg("_worker pipeline finished OK")
             except Exception as exc:
+                _dbg(f"EXCEPTION _worker pipeline failed: {exc}\n{traceback.format_exc()}")
                 print(f"\n[ERROR] Pipeline failed: {exc}\n")
         self.output_queue.put(None)
 

@@ -34,10 +34,35 @@ INTEGRATION
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
+import traceback
+from datetime import datetime
 
 import requests
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [browser_dom] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 
 CDP_PORT = 9222
 
@@ -93,7 +118,8 @@ def _cdp_up() -> bool:
     try:
         requests.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=2)
         return True
-    except requests.RequestException:
+    except requests.RequestException as e:
+        _dbg(f"_cdp_up FAIL on port {CDP_PORT}: {type(e).__name__}: {e}")
         return False
 
 
@@ -115,13 +141,14 @@ def _kill_existing_chrome():
     running (or thinks it is, via lock files) under a process without the
     flag, so when using the REAL profile we must fully close Chrome first
     and clear its lock files before relaunching with debugging enabled."""
+    _dbg("_kill_existing_chrome: taskkill chrome.exe /F /T")
     try:
         subprocess.run(
             ["taskkill", "/IM", "chrome.exe", "/F", "/T"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        _dbg(f"_kill_existing_chrome: taskkill failed: {e}")
     # Give Windows time to fully release the process/file handles before
     # touching the profile directory.
     time.sleep(2.5)
@@ -131,6 +158,9 @@ def _kill_existing_chrome():
 
 def _launch_chrome_debug():
     exe = _chrome_exe()
+    _dbg(f"_launch_chrome_debug exe={exe!r} profile={PROFILE_DIR!r} real_profile={USE_REAL_PROFILE}")
+    if not os.path.exists(exe):
+        _dbg(f"_launch_chrome_debug WARNING: {exe} does not exist on disk")
     os.makedirs(PROFILE_DIR, exist_ok=True)
     cmd = [
         exe,
@@ -142,11 +172,14 @@ def _launch_chrome_debug():
     ]
     if USE_REAL_PROFILE:
         cmd.append(f"--profile-directory={PROFILE_NAME}")
+    _dbg(f"_launch_chrome_debug cmd={cmd}")
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(40):
+    for attempt in range(40):
         time.sleep(0.5)
         if _cdp_up():
+            _dbg(f"_launch_chrome_debug OK: CDP up after ~{(attempt + 1) * 0.5:.1f}s")
             return True
+    _dbg(f"_launch_chrome_debug FAIL: CDP port {CDP_PORT} never came up after 20s")
     return False
 
 
@@ -156,6 +189,7 @@ def _ensure_chrome() -> str | None:
         if _cdp_up():
             return None
 
+        _dbg("_ensure_chrome: CDP down, launching Chrome...")
         if USE_REAL_PROFILE:
             _kill_existing_chrome()
 
@@ -166,16 +200,19 @@ def _ensure_chrome() -> str | None:
             # First attempt failed - most likely another Chrome process (or a
             # lingering lock file) grabbed the profile again in between. Retry
             # once with a harder kill before giving up.
+            _dbg("_ensure_chrome: first launch failed, retrying after hard kill")
             _kill_existing_chrome()
             if _launch_chrome_debug():
                 return None
 
         exe_used = _chrome_exe()
-        return (
+        err = (
             f"Chrome did not open port {CDP_PORT} (exe: {exe_used}, profile: {PROFILE_DIR}). "
             f"Check that chrome.exe exists at one of the paths in CHROME_PATHS, and that no "
             f"antivirus/EDR software is blocking the --remote-debugging-port flag."
         )
+        _dbg(f"EXCEPTION _ensure_chrome giving up: {err}")
+        return err
 
 
 def _get_pw():
@@ -187,6 +224,7 @@ def _get_pw():
     """
     pw = getattr(_tls, "_pw", None)
     if pw is None:
+        _dbg("_get_pw: starting NEW sync_playwright context for this thread")
         from playwright.sync_api import sync_playwright
         pw = sync_playwright().start()
         _tls._pw = pw
@@ -219,28 +257,37 @@ def _get_page(force_reconnect: bool = False):
         try:
             _tls._page.evaluate("1")  # real liveness check, not just .url
             return _tls._page
-        except Exception:
+        except Exception as e:
+            _dbg(f"_get_page: cached page is DEAD ({type(e).__name__}: {e}) - dropping it")
             _tls._page = None
             _tls._browser = None
 
     if getattr(_tls, "_browser", None) is not None:
         try:
             if not _tls._browser.is_connected():
+                _dbg("_get_page: browser handle disconnected - dropping it")
                 _tls._browser = None
-        except Exception:
+        except Exception as e:
+            _dbg(f"_get_page: browser.is_connected() raised {type(e).__name__}: {e}")
             _tls._browser = None
 
     if _tls._browser is None:
+        _dbg("_get_page: connecting over CDP to http://127.0.0.1:%d" % CDP_PORT)
         _tls._browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
 
     context = _tls._browser.contexts[0]
     pages = [p for p in context.pages if not p.is_closed()]
     if not pages:
+        _dbg("_get_page: no open tabs - creating new page")
         _tls._page = context.new_page()
     else:
         # Prefer the most recently opened/active tab over a stale first tab.
         _tls._page = pages[-1]
-    _tls._page.bring_to_front()
+        _dbg(f"_get_page: reusing tab url={_tls._page.url!r} (of {len(pages)} open)")
+    try:
+        _tls._page.bring_to_front()
+    except Exception as e:
+        _dbg(f"_get_page: bring_to_front failed: {type(e).__name__}: {e}")
     return _tls._page
 
 
@@ -252,7 +299,10 @@ def _with_page(action):
     try:
         page = _get_page()
         return action(page)
-    except Exception:
+    except Exception as e:
+        _dbg(f"EXCEPTION first attempt in _with_page: {type(e).__name__}: {e}\n"
+             f"{traceback.format_exc()[:1500]}")
+        _dbg("_with_page: forcing fresh reconnect and retrying once")
         page = _get_page(force_reconnect=True)
         return action(page)
 
@@ -351,6 +401,7 @@ def _fmt_snapshot(page, els: list, start: int = 0, limit: int = 80) -> str:
 
 def browser_goto(url: str, start: int = 0, limit: int = 80) -> str:
     """Open a URL in the agent-controlled Chrome tab, then show page elements."""
+    _dbg(f"browser_goto url={url!r}")
     def _do(page):
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(2500)
@@ -358,6 +409,7 @@ def browser_goto(url: str, start: int = 0, limit: int = 80) -> str:
     try:
         return _with_page(_do)
     except Exception as e:
+        _dbg(f"EXCEPTION browser_goto {url!r}: {e}\n{traceback.format_exc()[:1500]}")
         return f"Error: {e}"
 
 
@@ -369,8 +421,12 @@ def browser_snapshot(start: int = 0, limit: int = 80) -> str:
     def _do(page):
         return _fmt_snapshot(page, page.evaluate(_SNAPSHOT_JS))
     try:
-        return _with_page(_do)
+        result = _with_page(_do)
+        first_line = result.splitlines()[0] if result else ""
+        _dbg(f"browser_snapshot OK {first_line!r} len={len(result)}")
+        return result
     except Exception as e:
+        _dbg(f"EXCEPTION browser_snapshot: {e}\n{traceback.format_exc()[:1500]}")
         return f"Error: {e}"
 
 
@@ -381,11 +437,15 @@ def browser_click(index: int) -> str:
     /preload/search-custom-invite href, which reliably opens the invite dialog.
     For everything else we click with Playwright's TRUSTED mouse events (not JS
     el.click()) so React dropdowns like LinkedIn's 'More ...' menu actually open."""
+    _dbg(f"browser_click index={index}")
     def _do(page):
         info = page.evaluate(_CONNECT_DETECT_JS, int(index))
         if info is None:
+            _dbg(f"browser_click: element {index} stale")
             return f"Error: element {index} stale - call browser_snapshot again."
         if info["isInvite"] and info["href"]:
+            _dbg(f"browser_click: invite link detected for '{info['label']}' "
+                 f"-> navigating to {info['href'][:120]}")
             page.goto(info["href"], wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(3000)
             return (f"Opened the LinkedIn connect dialog for '{info['label']}' "
@@ -393,26 +453,33 @@ def browser_click(index: int) -> str:
         handle = page.evaluate_handle("(i) => (window.__agentEls || [])[i]", int(index))
         el = handle.as_element()
         if not el:
+            _dbg(f"browser_click: element {index} not an element handle")
             return f"Error: element {index} not an element - call browser_snapshot again."
         try:
             el.scroll_into_view_if_needed()
             el.click(timeout=8000)
-        except Exception:
+        except Exception as e:
+            _dbg(f"browser_click: trusted click failed ({type(e).__name__}: {e}), "
+                 f"falling back to JS click")
             page.evaluate(_CLICK_JS, int(index))  # fallback: synthetic click
         page.wait_for_timeout(2000)
+        _dbg(f"browser_click OK [{index}] '{info['label']}'")
         return f"Clicked [{index}] '{info['label']}'. Call browser_snapshot to see the new page state."
     try:
         return _with_page(_do)
     except Exception as e:
+        _dbg(f"EXCEPTION browser_click index={index}: {e}\n{traceback.format_exc()[:1500]}")
         return f"Error: {e}"
 
 
 def browser_type(index: int, text: str, press_enter: bool = False) -> str:
     """Click element N (usually an input/textbox) then type text with real keyboard events."""
+    _dbg(f"browser_type index={index} text={text[:60]!r} press_enter={press_enter}")
     def _do(page):
         handle = page.evaluate_handle("(i) => (window.__agentEls || [])[i]", int(index))
         el = handle.as_element()
         if not el:
+            _dbg(f"browser_type: element {index} not an element handle")
             return f"Error: element {index} not an element - call browser_snapshot again."
         el.click()
         page.keyboard.type(text, delay=30)
@@ -423,11 +490,13 @@ def browser_type(index: int, text: str, press_enter: bool = False) -> str:
     try:
         return _with_page(_do)
     except Exception as e:
+        _dbg(f"EXCEPTION browser_type index={index}: {e}\n{traceback.format_exc()[:1500]}")
         return f"Error: {e}"
 
 
 def browser_press(key: str) -> str:
     """Press a keyboard key in the page (Enter, Escape, Tab, ArrowDown...)."""
+    _dbg(f"browser_press key={key!r}")
     def _do(page):
         page.keyboard.press(key)
         page.wait_for_timeout(1000)
@@ -435,11 +504,13 @@ def browser_press(key: str) -> str:
     try:
         return _with_page(_do)
     except Exception as e:
+        _dbg(f"EXCEPTION browser_press key={key!r}: {e}\n{traceback.format_exc()[:1500]}")
         return f"Error: {e}"
 
 
 def browser_scroll(dy: int = 600, start: int = 0, limit: int = 80) -> str:
     """Scroll the page (positive dy = down, in pixels), then show elements."""
+    _dbg(f"browser_scroll dy={dy}")
     def _do(page):
         page.mouse.wheel(0, int(dy))
         page.wait_for_timeout(1200)
@@ -447,6 +518,7 @@ def browser_scroll(dy: int = 600, start: int = 0, limit: int = 80) -> str:
     try:
         return _with_page(_do)
     except Exception as e:
+        _dbg(f"EXCEPTION browser_scroll dy={dy}: {e}\n{traceback.format_exc()[:1500]}")
         return f"Error: {e}"
 
 
@@ -527,4 +599,5 @@ _BROWSER_TOOLS = {
 
 def register_browser_tools(tools_dict: dict) -> None:
     """Merge the DOM browser tools into your existing TOOLS dict."""
+    _dbg(f"register_browser_tools adding {len(_BROWSER_TOOLS)} tools")
     tools_dict.update(_BROWSER_TOOLS)

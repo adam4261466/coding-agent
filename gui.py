@@ -6,6 +6,8 @@ import os
 import sys
 import time
 import requests
+import traceback
+from datetime import datetime
 
 from agent import SYSTEM_PROMPT
 
@@ -16,6 +18,28 @@ from linkedin_intelligence.outreach.pipeline import produce_message, register_re
 from linkedin_intelligence.outreach.sequence import mark_sent
 from linkedin_intelligence.outreach.campaign import sync_campaigns, eligible_for_campaign, assign_prospects
 from linkedin_intelligence.outreach import analytics
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [gui] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 
 STATUS_FILTERS = {
     "Ready for review": "ready_for_human_review",
@@ -30,6 +54,7 @@ STATUS_FILTERS = {
 
 class AgentGUI:
     def __init__(self, root):
+        _dbg("AgentGUI.__init__ starting")
         self.root = root
         self.root.title("Coding Agent - Prospecting")
         self.root.geometry("980x700")
@@ -53,6 +78,7 @@ class AgentGUI:
         self.refresh_review()
         self.refresh_outreach()
         self.refresh_conversations()
+        _dbg("AgentGUI.__init__ complete")
 
     def _on_model_changed(self, *_):
         self.model = self.model_var.get()
@@ -224,6 +250,7 @@ class AgentGUI:
 
     # ---------------- Review logic ----------------
     def refresh_review(self):
+        _dbg(f"refresh_review filter={self.filter_var.get() if hasattr(self, 'filter_var') else '?'}")
         self.review_prospects = []
         self.selected_pid = None
         status = STATUS_FILTERS.get(self.filter_var.get()) if hasattr(self, "filter_var") else None
@@ -233,7 +260,9 @@ class AgentGUI:
                 prospects = store.prospects(status=status)
             finally:
                 store.close()
-        except Exception:
+            _dbg(f"refresh_review OK n={len(prospects)}")
+        except Exception as e:
+            _dbg(f"EXCEPTION refresh_review loading prospects: {e}\n{traceback.format_exc()}")
             prospects = []
         self.review_prospects = prospects
         self.review_list.delete(0, tk.END)
@@ -329,6 +358,7 @@ class AgentGUI:
             "research": "RESEARCH_MORE",
         }[new_status]
         reason = self.reason_var.get().strip()
+        _dbg(f"_review_action pid={self.selected_pid} new_status={new_status} reason={reason!r}")
         try:
             store = Store(DB_PATH)
             try:
@@ -340,9 +370,11 @@ class AgentGUI:
                 store.record_feedback(self.selected_pid, new_status,
                                       reason=reason, status_before=before)
                 store.set_status(self.selected_pid, new_status, next_action)
+                _dbg(f"_review_action OK {before} -> {new_status}")
             finally:
                 store.close()
         except Exception as e:
+            _dbg(f"EXCEPTION _review_action: {e}\n{traceback.format_exc()}")
             self._append(f"Review error: {e}", "error")
             return
         self.reason_var.set("")
@@ -430,13 +462,15 @@ class AgentGUI:
                   activebackground="#555").pack(side=tk.LEFT)
 
     def _load_campaign_choices(self):
+        _dbg("_load_campaign_choices")
         try:
             store = Store(DB_PATH)
             try:
                 names = [c["campaign_id"] for c in store.campaigns()]
             finally:
                 store.close()
-        except Exception:
+        except Exception as e:
+            _dbg(f"EXCEPTION _load_campaign_choices (first attempt): {e}\n{traceback.format_exc()}")
             names = []
         if not names:
             try:
@@ -444,9 +478,11 @@ class AgentGUI:
                 try:
                     sync_campaigns(store)
                     names = [c["campaign_id"] for c in store.campaigns()]
+                    _dbg(f"_load_campaign_choices synced, n={len(names)}")
                 finally:
                     store.close()
-            except Exception:
+            except Exception as e:
+                _dbg(f"EXCEPTION _load_campaign_choices (sync fallback): {e}\n{traceback.format_exc()}")
                 names = []
         menu = self.outreach_campaign_menu["menu"]
         menu.delete(0, "end")
@@ -456,6 +492,7 @@ class AgentGUI:
             self.outreach_campaign_var.set("All")
 
     def refresh_outreach(self):
+        _dbg(f"refresh_outreach campaign={getattr(self, 'outreach_campaign_var', None) and self.outreach_campaign_var.get()}")
         self.outreach_messages = []
         self.selected_msg_id = None
         self._load_campaign_choices()
@@ -467,7 +504,9 @@ class AgentGUI:
                 msgs = approval_queue(store, campaign_id)
             finally:
                 store.close()
-        except Exception:
+            _dbg(f"refresh_outreach OK n={len(msgs)}")
+        except Exception as e:
+            _dbg(f"EXCEPTION refresh_outreach loading queue: {e}\n{traceback.format_exc()}")
             msgs = []
         self.outreach_messages = msgs
         self.outreach_list.delete(0, tk.END)
@@ -479,7 +518,8 @@ class AgentGUI:
                     cp = store.get_campaign_prospect(m["campaign_id"], m["prospect_id"])
                 finally:
                     store.close()
-            except Exception:
+            except Exception as e:
+                _dbg(f"EXCEPTION refresh_outreach detail load for {m['message_id']}: {e}")
                 p, cp = None, None
             name = (p or {}).get("full_name", m["prospect_id"])
             prio = (cp or {}).get("priority", 0)
@@ -551,10 +591,12 @@ class AgentGUI:
         if not self.selected_msg_id:
             return
         mid = self.selected_msg_id
+        _dbg(f"_outreach_action action={action} mid={mid}")
         store = Store(DB_PATH)
         try:
             m = store.get_message(mid)
             if not m:
+                _dbg(f"_outreach_action: message {mid} not found in DB")
                 return
             if action == "approve":
                 approve(store, mid)
@@ -565,13 +607,20 @@ class AgentGUI:
                 cp = store.get_campaign_prospect(m["campaign_id"], m["prospect_id"])
                 if campaign and cp:
                     produce_message(store, campaign, cp, model=self.model)
+                    _dbg(f"_outreach_action regenerated message for {m['prospect_id']}")
+                else:
+                    _dbg(f"_outreach_action regenerate skipped: campaign={bool(campaign)} cp={bool(cp)}")
             elif action == "edit":
                 self._edit_message_dialog(m)
+        except Exception as e:
+            _dbg(f"EXCEPTION _outreach_action {action} mid={mid}: {e}\n{traceback.format_exc()}")
+            raise
         finally:
             store.close()
         self.refresh_outreach()
 
     def _approve_all(self):
+        _dbg("_approve_all")
         try:
             store = Store(DB_PATH)
             try:
@@ -587,10 +636,12 @@ class AgentGUI:
                     store.set_status(p["prospect_id"], "ready_for_outreach",
                                      next_action="READY_FOR_OUTREACH")
                     count += 1
+                _dbg(f"_approve_all OK count={count}")
                 self._append(f"Approved {count} prospects to ready_for_outreach", "sys")
             finally:
                 store.close()
         except Exception as e:
+            _dbg(f"EXCEPTION _approve_all: {e}\n{traceback.format_exc()}")
             self._append(f"Approve all error: {e}", "error")
         self.refresh_outreach()
 
@@ -613,6 +664,7 @@ class AgentGUI:
             text = box.get("1.0", "end-1c").strip()
             if not text:
                 return
+            _dbg(f"_save new version for message {m['message_id']} len={len(text)}")
             store = Store(DB_PATH)
             try:
                 import uuid
@@ -640,6 +692,10 @@ class AgentGUI:
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
                 store.save_message(new)
+                _dbg(f"_save OK new_id={new['message_id']} version={new['version']}")
+            except Exception as e:
+                _dbg(f"EXCEPTION _save: {e}\n{traceback.format_exc()}")
+                raise
             finally:
                 store.close()
             top.destroy()
@@ -717,6 +773,7 @@ class AgentGUI:
                   ).pack(side=tk.LEFT)
 
     def refresh_conversations(self):
+        _dbg("refresh_conversations")
         self.convo_prospects = []
         self.selected_convo_pid = None
         try:
@@ -725,7 +782,8 @@ class AgentGUI:
                 cps = store.campaign_prospects()
             finally:
                 store.close()
-        except Exception:
+        except Exception as e:
+            _dbg(f"EXCEPTION refresh_conversations: {e}\n{traceback.format_exc()}")
             cps = []
         rows = []
         for cp in cps:
@@ -744,7 +802,8 @@ class AgentGUI:
                     p = store.get_prospect(cp["prospect_id"])
                 finally:
                     store.close()
-            except Exception:
+            except Exception as e:
+                _dbg(f"EXCEPTION refresh_conversations prospect load {cp['prospect_id']}: {e}")
                 p = None
             name = (p or {}).get("full_name", cp["prospect_id"])
             self.convo_list.insert(tk.END,
@@ -809,6 +868,7 @@ class AgentGUI:
                    if c["prospect_id"] == self.selected_convo_pid), None)
         if not cp:
             return
+        _dbg(f"_classify_reply pid={self.selected_convo_pid} reply_len={len(reply)}")
         try:
             store = Store(DB_PATH)
             try:
@@ -820,9 +880,11 @@ class AgentGUI:
                         f"objection={result['classification'].get('objection')}")
                 if result.get("objection_draft"):
                     note += " (objection draft queued for approval)"
+                _dbg(f"_classify_reply OK {note}")
             finally:
                 store.close()
         except Exception as e:
+            _dbg(f"EXCEPTION _classify_reply: {e}\n{traceback.format_exc()}")
             self._append(f"Classify error: {e}", "error")
             return
         self.reply_var.set("")
@@ -836,13 +898,16 @@ class AgentGUI:
                    if c["prospect_id"] == self.selected_convo_pid), None)
         if not cp:
             return
+        _dbg(f"_mark_sent pid={self.selected_convo_pid} campaign={cp.get('campaign_id')}")
         try:
             store = Store(DB_PATH)
             try:
                 mark_sent(store, cp)
+                _dbg("_mark_sent OK")
             finally:
                 store.close()
         except Exception as e:
+            _dbg(f"EXCEPTION _mark_sent: {e}\n{traceback.format_exc()}")
             self._append(f"Mark sent error: {e}", "error")
             return
         self.refresh_conversations()
@@ -860,13 +925,16 @@ class AgentGUI:
             return "break"
 
     def _load_models(self):
+        _dbg(f"_load_models base_url={self.base_url}")
         def _load():
             try:
                 resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
                 models = [m["name"] for m in resp.json().get("models", [])]
+                _dbg(f"_load_models OK n={len(models)} models={models[:10]}")
                 self.root.after(0, lambda: self._update_models(models))
-            except Exception:
-                pass
+            except Exception as e:
+                _dbg(f"EXCEPTION _load_models (Ollama at {self.base_url} unreachable?): "
+                     f"{type(e).__name__}: {e}")
         threading.Thread(target=_load, daemon=True).start()
 
     def _update_models(self, models):
@@ -885,6 +953,7 @@ class AgentGUI:
         msg = self.input_box.get("1.0", tk.END).strip()
         if not msg or self.running:
             return
+        _dbg(f"_send user message len={len(msg)} model={self.model_var.get()}")
         self.input_box.delete("1.0", tk.END)
         self._append(f"You: {msg}", "user")
         self.messages.append({"role": "user", "content": msg})
@@ -897,6 +966,7 @@ class AgentGUI:
         from tools import TOOLS, CUSTOM_TOOLS, delete_tool
 
         for step in range(25):
+            _dbg(f"--- gui agent loop step {step + 1}/25 ---")
             self.root.after(0, lambda s=step: self.status.config(text=f"Step {s+1}..."))
 
             schemas = []
@@ -922,8 +992,11 @@ class AgentGUI:
                 start = time.time()
                 resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=600)
                 elapsed = time.time() - start
+                _dbg(f"LLM RESPONSE status={resp.status_code} elapsed={elapsed:.1f}s "
+                     f"bytes={len(resp.text)}")
 
                 if resp.status_code != 200:
+                    _dbg(f"LLM ERROR body={resp.text[:500]}")
                     self.root.after(0, lambda: self._append(f"Error: Ollama {resp.status_code}", "error"))
                     break
 
@@ -931,6 +1004,7 @@ class AgentGUI:
                 message = data.get("message", {})
                 content = message.get("content", "")
                 tool_calls = message.get("tool_calls", [])
+                _dbg(f"LLM OK content_len={len(content)} tool_calls={len(tool_calls)}")
 
                 self.root.after(0, lambda e=elapsed: self._append(f"({e:.1f}s)", "sys"))
 
@@ -947,7 +1021,14 @@ class AgentGUI:
                     func = tc.get("function", {})
                     name = func.get("name", "")
                     args_raw = func.get("arguments", "{}")
-                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    try:
+                        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    except json.JSONDecodeError as e:
+                        _dbg(f"EXCEPTION parsing tool arguments for {name!r}: {e} raw={str(args_raw)[:300]}")
+                        args = {}
+                    except Exception as e:
+                        _dbg(f"EXCEPTION parsing tool arguments for {name!r}: {e}")
+                        args = {}
 
                     self.root.after(0, lambda n=name, a=args: self._append(
                         f"  -> {n}({json.dumps(a, ensure_ascii=False)[:200]})", "tool"
@@ -959,10 +1040,12 @@ class AgentGUI:
                             if name in CUSTOM_TOOLS:
                                 delete_tool(name)
                         except Exception as e:
+                            _dbg(f"EXCEPTION tool {name}: {e}\n{traceback.format_exc()}")
                             if name in CUSTOM_TOOLS:
                                 delete_tool(name)
                             result = f"Error: {e}"
                     else:
+                        _dbg(f"unknown tool requested: {name!r}")
                         result = f"Error: unknown tool '{name}'"
 
                     if len(result) > 1000000:
@@ -975,6 +1058,8 @@ class AgentGUI:
                     self.messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
 
             except Exception as e:
+                _dbg(f"EXCEPTION gui agent loop step {step + 1}: {type(e).__name__}: {e}\n"
+                     f"{traceback.format_exc()}")
                 self.root.after(0, lambda err=str(e): self._append(f"Error: {err}", "error"))
                 break
 
@@ -996,9 +1081,14 @@ class AgentGUI:
 
 
 def main():
+    _dbg(f"gui main() starting, cwd={os.getcwd()}")
     root = tk.Tk()
-    AgentGUI(root)
-    root.mainloop()
+    try:
+        AgentGUI(root)
+        root.mainloop()
+    except Exception as e:
+        _dbg(f"FATAL EXCEPTION in gui main: {e}\n{traceback.format_exc()}")
+        raise
 
 
 if __name__ == "__main__":

@@ -19,14 +19,39 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import threading
+import traceback
+from datetime import datetime
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except (AttributeError, Exception):
     pass
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [phase3] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 
 from linkedin_intelligence.utils import DB_PATH, campaign_config
 from linkedin_intelligence.store import Store
@@ -738,6 +763,7 @@ def _print_queue(store, campaign_name=None, as_json=False):
 def main(argv=None):
     ap = build_parser()
     args = ap.parse_args(argv)
+    _dbg(f"main() args: {vars(args)}")
 
     if args.top < 0 or args.limit < 0:
         ap.error("--top and --limit cannot be negative")
@@ -823,6 +849,9 @@ def main(argv=None):
         else:
             ap.print_help()
         return 0
+    except Exception as e:
+        _dbg(f"EXCEPTION phase3 main: {e}\n{traceback.format_exc()}")
+        raise
     finally:
         store.close()
 

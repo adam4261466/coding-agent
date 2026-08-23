@@ -19,13 +19,39 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
+import threading
+import traceback
+from datetime import datetime
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except (AttributeError, Exception):
     pass
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [run_phase4] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 
 from linkedin_intelligence.utils import DB_PATH
 from linkedin_intelligence.store import Store
@@ -63,6 +89,7 @@ def main():
     ap.add_argument("--campaign", default=None)
     ap.add_argument("--json", dest="as_json", action="store_true")
     args = ap.parse_args()
+    _dbg(f"main() args: {vars(args)}")
 
     store = Store(DB_PATH)
     try:
@@ -164,6 +191,9 @@ def main():
             print(json.dumps(bundle, ensure_ascii=False, indent=2))
         elif not bundle:
             ap.print_help()
+    except Exception as e:
+        _dbg(f"EXCEPTION run_phase4 main: {e}\n{traceback.format_exc()}")
+        raise
     finally:
         store.close()
 

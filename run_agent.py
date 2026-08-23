@@ -17,6 +17,9 @@ Usage:
 import argparse
 import os
 import sys
+import threading
+import traceback
+from datetime import datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
@@ -24,6 +27,27 @@ if ROOT not in sys.path:
 
 from linkedin_intelligence.store import Store
 from linkedin_intelligence.utils import DB_PATH
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(ROOT, "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [run_agent] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def main():
@@ -50,6 +74,9 @@ def main():
     parser.add_argument("--limit", type=int, default=10,
                         help="Max prospects to assign per campaign (default: 10)")
     args = parser.parse_args()
+    _dbg(f"main() args: dry_run={args.dry_run} manual={args.manual} cycles={args.cycles} "
+         f"delay={args.delay} model={args.model} browser_model={args.browser_model} "
+         f"assign={args.assign}")
 
     db_path = args.db or DB_PATH
     store = Store(db_path)
@@ -82,6 +109,10 @@ def main():
 
     try:
         orchestrator.run()
+        _dbg("orchestrator.run() finished normally")
+    except Exception as e:
+        _dbg(f"EXCEPTION orchestrator.run(): {e}\n{traceback.format_exc()}")
+        raise
     finally:
         store.close()
         memory.close()
@@ -89,6 +120,7 @@ def main():
 
 def _run_assign(store, limit):
     """Assign eligible prospects to active campaigns."""
+    _dbg(f"_run_assign limit={limit}")
     from linkedin_intelligence.outreach.campaign import (
         sync_campaigns, assign_batch)
 

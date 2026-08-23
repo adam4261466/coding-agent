@@ -2,7 +2,32 @@ import csv
 import io
 import os
 import re
+import sys
+import threading
+import traceback
 from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# Inline debugging: prints to stderr and appends to agent_debug.log
+# (set AGENT_DEBUG=0 to disable)
+# ---------------------------------------------------------------------------
+_DEBUG_ON = os.environ.get("AGENT_DEBUG", "1") != "0"
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_debug.log")
+
+
+def _dbg(msg: str):
+    if not _DEBUG_ON:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        thread = threading.current_thread().name
+        line = f"[{ts}] [linkedin_data] [{thread}] {msg}"
+        print(line[:4000], file=sys.stderr, flush=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 
 EXPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "linkedin_export")
 
@@ -34,21 +59,29 @@ def _clean_text(text: str) -> str:
 def _read_csv(fname: str) -> list:
     path = os.path.join(EXPORT_DIR, fname)
     if not os.path.exists(path):
+        _dbg(f"_read_csv MISSING file: {path}")
         return []
     try:
         with io.open(path, "r", encoding="utf-8-sig", errors="replace") as f:
             lines = f.read().splitlines()
-    except Exception:
+    except Exception as e:
+        _dbg(f"EXCEPTION _read_csv reading {fname}: {e}\n{traceback.format_exc()}")
         return []
     header = HEADER_ROWS.get(fname)
     if header:
         start = next((k for k, line in enumerate(lines) if line.lstrip().startswith(header)), 0)
+        if start:
+            _dbg(f"_read_csv {fname}: header found at line {start} (skipped preamble)")
         lines = lines[start:]
     if not lines:
+        _dbg(f"_read_csv {fname}: file is empty")
         return []
     try:
-        return list(csv.DictReader(io.StringIO("\n".join(lines))))
-    except Exception:
+        rows = list(csv.DictReader(io.StringIO("\n".join(lines))))
+        _dbg(f"_read_csv OK {fname}: {len(rows)} rows")
+        return rows
+    except Exception as e:
+        _dbg(f"EXCEPTION _read_csv parsing {fname}: {e}\n{traceback.format_exc()}")
         return []
 
 
@@ -62,6 +95,7 @@ def _row_display(row: dict, keys: list) -> list:
 
 
 def connections(kw: str = "", limit: int = 30) -> str:
+    _dbg(f"connections kw={kw!r} limit={limit}")
     rows = _read_csv("Connections.csv")
     if not rows:
         return "No Connections.csv found in the export."
@@ -91,6 +125,7 @@ def connections(kw: str = "", limit: int = 30) -> str:
 
 
 def connection(name: str) -> str:
+    _dbg(f"connection name={name!r}")
     rows = _read_csv("Connections.csv")
     name = name.lower().strip()
     best = None
@@ -102,6 +137,7 @@ def connection(name: str) -> str:
         if name in full and best is None:
             best = r
     if not best:
+        _dbg(f"connection: no match for {name!r} among {len(rows)} rows")
         return f"No connection found matching '{name}'."
     lines = _row_display(
         best,
@@ -111,6 +147,7 @@ def connection(name: str) -> str:
 
 
 def companies(kw: str = "", limit: int = 40) -> str:
+    _dbg(f"companies kw={kw!r} limit={limit}")
     rows = _read_csv("Company Follows.csv")
     if not rows:
         return "No Company Follows.csv found."
@@ -123,6 +160,7 @@ def companies(kw: str = "", limit: int = 40) -> str:
 
 
 def messages(kw: str = "", limit: int = 40) -> str:
+    _dbg(f"messages kw={kw!r} limit={limit}")
     rows = []
     for fname in ["messages.csv", "guide_messages.csv", "learning_coach_messages.csv", "learning_role_play_messages.csv"]:
         rows.extend(_read_csv(fname))
@@ -142,6 +180,7 @@ def messages(kw: str = "", limit: int = 40) -> str:
 
 
 def invitations(kw: str = "", limit: int = 40) -> str:
+    _dbg(f"invitations kw={kw!r} limit={limit}")
     rows = _read_csv("Invitations.csv")
     if not rows:
         return "No Invitations.csv found."
@@ -154,6 +193,7 @@ def invitations(kw: str = "", limit: int = 40) -> str:
 
 
 def learning(limit: 20) -> str:
+    _dbg(f"learning limit={limit}")
     rows = _read_csv("Learning.csv")
     if not rows:
         return "No Learning.csv found."
@@ -166,6 +206,7 @@ def learning(limit: 20) -> str:
 
 
 def profile() -> str:
+    _dbg("profile()")
     parts = []
     for fname in ["Profile.csv", "Email Addresses.csv", "Education.csv", "PhoneNumbers.csv", "Profile Summary.csv", "Registration.csv"]:
         rows = _read_csv(fname)
@@ -179,6 +220,7 @@ def profile() -> str:
 
 
 def digest() -> str:
+    _dbg("digest()")
     conns = _read_csv("Connections.csv")
     comps = _read_csv("Company Follows.csv")
     learn = _read_csv("Learning.csv")
@@ -210,8 +252,10 @@ ACTIONS = {
 
 def linkedin_data(action: str = "summary", query: str = "", limit: int = 30) -> str:
     """Search the user's LinkedIn data export (offline, no browser needed)."""
+    _dbg(f"linkedin_data action={action!r} query={query!r} limit={limit}")
     action = (action or "summary").strip().lower()
     if action not in ACTIONS:
+        _dbg(f"linkedin_data UNKNOWN action {action!r}, falling back to connection search")
         matches = [r for r in _read_csv("Connections.csv") if query.lower() in f"{r.get('First Name','')} {r.get('Last Name','')}".lower()]
         lines = [f"Unknown action '{action}'. Matching connections for '{query}': {len(matches)}"]
         for r in matches[:limit]:
@@ -219,6 +263,9 @@ def linkedin_data(action: str = "summary", query: str = "", limit: int = 30) -> 
         lines.append("Available actions: summary, connections, connection, companies, messages, invitations, learning, profile")
         return "\n".join(lines)
     try:
-        return ACTIONS[action](query, limit)
+        result = ACTIONS[action](query, limit)
+        _dbg(f"linkedin_data OK action={action} result_len={len(result)}")
+        return result
     except TypeError:
+        _dbg(f"linkedin_data action={action} does not accept (query, limit), calling with no args")
         return ACTIONS[action]()
