@@ -22,17 +22,21 @@ CHANGES FROM THE ORIGINAL:
     that *something* paces this, where previously nothing did.
 """
 
+# The root agent.py module (the base browser Agent) must always win over
+# the linkedin_intelligence/agent/ package, so make sure PROJECT_ROOT is
+# the FIRST entry on sys.path - normalized, so unnormalized duplicates
+# pointing at subfolders can't shadow it.
 import json
 import os
 import random
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(ROOT))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-if PROJECT_ROOT not in sys.path:
+PROJECT_ROOT = os.path.realpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+if not sys.path or os.path.realpath(sys.path[0] or ".") != PROJECT_ROOT:
+    if PROJECT_ROOT in sys.path:
+        sys.path.remove(PROJECT_ROOT)
     sys.path.insert(0, PROJECT_ROOT)
 
 try:

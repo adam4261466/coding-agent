@@ -30,9 +30,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from db import connect as db_connect
+from ...db import connect as db_connect
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (

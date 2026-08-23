@@ -8,14 +8,15 @@ import json
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECT_ROOT = os.path.dirname(ROOT)
-# PROJECT_ROOT must be searched BEFORE ROOT: otherwise the package
-# linkedin_intelligence/agent/ shadows the top-level agent.py module
-# (the base browser Agent) and "from agent import Agent" fails.
-sys.path[:] = [p for p in sys.path if p not in (ROOT, PROJECT_ROOT)]
-sys.path.insert(0, ROOT)
-sys.path.insert(0, PROJECT_ROOT)
+# PROJECT_ROOT must be searched BEFORE anything else: the package
+# linkedin_intelligence/agent/ must never shadow the top-level agent.py
+# module (the base browser Agent).
+PROJECT_ROOT = os.path.realpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+if not sys.path or os.path.realpath(sys.path[0] or ".") != PROJECT_ROOT:
+    if PROJECT_ROOT in sys.path:
+        sys.path.remove(PROJECT_ROOT)
+    sys.path.insert(0, PROJECT_ROOT)
 
 try:
     from agent import Agent

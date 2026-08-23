@@ -12,9 +12,7 @@ and gets:
 This is the ONLY interface the planner uses.
 """
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from db import connect as db_connect
+from ...db import connect as db_connect
 
 from datetime import datetime, timezone
 
