@@ -21,6 +21,8 @@ EVENT TYPES:
   activation_detected    - prospect activated
   state_reconciliation   - state corrected from authoritative source
   handoff_requested      - agent needs human intervention
+  human_cleared          - a human resolved a handoff; orchestrator may
+                           pick this prospect back up next cycle
   action_executed        - browser action completed
   error                   - something went wrong
   agent_decision          - planner decided what to do

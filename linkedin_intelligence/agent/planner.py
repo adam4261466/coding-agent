@@ -63,6 +63,29 @@ CRITICAL RULES:
 """
 
 
+def _milestones(memory, prospect_id: str) -> dict:
+    """Explicit yes/no flags computed from the FULL event history (not a
+    truncated tail). The planner prompt used to dump only the last 5
+    events and hope the model noticed a research/qualify event in there -
+    once more than 5 other events happened (rate-limit blocks, errors,
+    decisions), the marker scrolled out of view and the model would
+    re-plan research_prospect / qualify_prospect from scratch, forever.
+    These flags are looked up directly against the event store, so they
+    are correct regardless of how much has happened since."""
+    ev = memory.events
+    return {
+        "research_done": ev.count_events(prospect_id, "profile_observed") > 0,
+        "qualified_ready": ev.last_event_of_type(prospect_id, "qualified") is not None
+        and bool((ev.last_event_of_type(prospect_id, "qualified") or {})
+                 .get("data", {}).get("qualified")),
+        "qualify_attempted": ev.count_events(prospect_id, "qualified") > 0,
+        "message_produced": ev.count_events(prospect_id, "message_generated") > 0,
+        "message_approved": ev.count_events(prospect_id, "message_approved") > 0,
+        "message_sent": ev.count_events(prospect_id, "message_sent") > 0,
+        "connection_sent": ev.count_events(prospect_id, "connection_sent") > 0,
+    }
+
+
 def plan_next_action(memory, prospect: dict, campaign: dict,
                      eligibility: list = None,
                      outreach_state: str = None,
@@ -75,13 +98,26 @@ def plan_next_action(memory, prospect: dict, campaign: dict,
     passed directly from the store.
 
     Returns {"action": str, "reason": str, "params": dict}.
-    Falls back to safe defaults if LLM is unreachable.
+    Falls back to safe defaults if LLM is unreachable OR if the
+    milestones make the next step unambiguous - the deterministic path
+    is what actually prevents loops; the LLM is only asked to break ties
+    the milestones can't resolve on their own (e.g. reply handling).
     """
-    context = memory.get_prospect_context(prospect["prospect_id"])
+    prospect_id = prospect["prospect_id"]
+    context = memory.get_prospect_context(prospect_id)
     if outreach_state:
         context["outreach_state"] = outreach_state
     context["eligibility"] = eligibility or []
     context["campaign"] = campaign
+    context["milestones"] = _milestones(memory, prospect_id)
+
+    # Deterministic fast-path: if the milestones make the next step
+    # obvious, skip the LLM entirely. This is the single biggest lever
+    # against loops - a 0.8B planner model re-guessing every cycle is
+    # the main source of repeated research/qualify/produce calls.
+    forced = _fallback_plan(context)
+    if forced.get("action") not in ("wait", None):
+        return forced
 
     prompt = _build_planner_prompt(context)
 
@@ -116,8 +152,13 @@ def _build_planner_prompt(context: dict) -> str:
     conv = context.get("conversation_summary", {})
     rel = context.get("relationship", {})
     task = context.get("active_task")
+    milestones = context.get("milestones", {})
 
     return f"""Decide the next action for this prospect.
+
+ALREADY DONE (ground truth from the full history - trust this over RECENT
+EVENTS below, which only shows the last few entries):
+{json.dumps(milestones, indent=2)}
 
 OUTREACH STATE: {context.get('outreach_state', 'NOT_IN_CAMPAIGN')}
 
@@ -197,33 +238,21 @@ def _fallback_plan(context: dict) -> dict:
     task = context.get("active_task")
     facts = context.get("facts", {})
     recent = context.get("recent_events", [])
-    qualified = any(
-        e.get("event_type") == "qualified"
-        for e in recent)
+    m = context.get("milestones") or {}
 
     connection = rel.get("connection_status", "unknown")
     signed_up = product.get("signed_up", False)
     activated = product.get("activated", False)
     has_facts = bool(facts)
 
-    research_done = any(
-        (e.get("data", {}).get("action") == "research_prospect"
-         or e.get("event_type") == "profile_observed")
-        for e in recent)
-
-    qualify_done = any(
-        e.get("event_type") == "qualified"
-        for e in recent)
-
-    message_produced = any(
-        e.get("event_type") == "message_generated"
-        or e.get("data", {}).get("action") == "produce_message"
-        for e in recent)
-
-    approved = any(
-        e.get("event_type") == "message_approved"
-        or e.get("data", {}).get("action") == "approve_message"
-        for e in recent)
+    # These now come from the full-history milestone flags (event_store
+    # lookups), not a scan of the last 5-20 events - so they stay correct
+    # no matter how many other events happened in between.
+    research_done = m.get("research_done", False)
+    qualify_attempted = m.get("qualify_attempted", False)
+    qualified_ready = m.get("qualified_ready", False)
+    message_produced = m.get("message_produced", False)
+    approved = m.get("message_approved", False)
 
     if task and task.get("next_action"):
         return {"action": task["next_action"]["type"],
@@ -235,9 +264,18 @@ def _fallback_plan(context: dict) -> dict:
             return {"action": "research_prospect",
                     "reason": "no facts yet — need research before message",
                     "params": {}}
-        if has_facts and not qualify_done:
+        if has_facts and not qualify_attempted:
             return {"action": "qualify_prospect",
                     "reason": "facts gathered, need qualification",
+                    "params": {}}
+        if qualify_attempted and not qualified_ready:
+            # Qualification ran and said NOT ready (RESEARCH_MORE or
+            # DO_NOT_CONTACT) - producing a message anyway is exactly the
+            # "dumb" bug this replaces. Hand it to a human instead of
+            # silently messaging an unqualified lead or looping forever.
+            return {"action": "handoff",
+                    "reason": "qualification did not clear this prospect "
+                              "for outreach - needs human review",
                     "params": {}}
         return {"action": "produce_message",
                 "reason": "ready to generate message",

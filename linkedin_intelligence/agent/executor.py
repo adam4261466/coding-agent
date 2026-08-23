@@ -439,6 +439,20 @@ def _execute_qualify(store, memory, prospect, campaign,
                                source="llm_qualification")
         elif action == "DO_NOT_CONTACT":
             store.set_status(prospect_id, "do_not_contact")
+            # Also move the CAMPAIGN's status machine to DO_NOT_CONTACT.
+            # Without this, campaign_prospects.status stays MESSAGE_PENDING
+            # forever, sweep_message_pending() keeps re-surfacing this
+            # prospect every single cycle, and the planner keeps
+            # re-deciding "not qualified" - a tight, permanent loop that
+            # never shows up as an "error" because nothing is failing.
+            try:
+                cp = store.get_campaign_prospect(campaign_id, prospect_id)
+                if cp:
+                    transition(store, cp, "DO_NOT_CONTACT",
+                               event="qualification_rejected",
+                               note=q.get("reason"))
+            except ValueError:
+                pass
             memory.record_event("qualified", prospect_id, campaign_id,
                                 data={"score": q.get("fit_score"),
                                       "action": action, "qualified": False})

@@ -48,6 +48,17 @@ class AgentOrchestrator:
         self.max_cycles = max_cycles
         self.cycle_delay = cycle_delay
         self._cycle_count = 0
+        # In-memory circuit breaker: (prospect_id, action) -> consecutive
+        # non-productive attempts in a row. This is what actually stops
+        # the fast loop - previously a rate-limited or handed-off
+        # prospect got re-planned and re-attempted on EVERY cycle
+        # (~2s apart), spamming duplicate handoff events and burning
+        # planner calls forever with nothing ever changing.
+        self._streak = {}
+        self.STREAK_LIMIT = 3
+        # Thread-safe pause flag - set by the dashboard GUI to freeze the
+        # loop between cycles without killing the process.
+        self.paused = False
 
     def run(self):
         """Main agent loop. Runs until max_cycles or interrupted."""
@@ -60,6 +71,10 @@ class AgentOrchestrator:
 
         try:
             while True:
+                if self.paused:
+                    time.sleep(1)
+                    continue
+
                 self._cycle_count += 1
                 if self.max_cycles and self._cycle_count > self.max_cycles:
                     print(f"[agent] Reached max cycles ({self.max_cycles})")
@@ -72,8 +87,13 @@ class AgentOrchestrator:
                     print(f"[agent] {results['handoffs']} handoff(s) "
                           f"requested — waiting for human")
 
-                if results.get("work_done", 0) == 0:
-                    print(f"[agent] No work available, sleeping "
+                # Only a genuinely productive cycle (something executed,
+                # not just rate-limited/skipped/handed-off) earns the
+                # short 2s sleep. Anything else backs off to the full
+                # cycle_delay so a stuck prospect can't be re-attempted
+                # every couple of seconds forever.
+                if results.get("productive", 0) == 0:
+                    print(f"[agent] No productive work this cycle, sleeping "
                           f"{self.cycle_delay}s")
                     time.sleep(self.cycle_delay)
                 else:
@@ -115,6 +135,7 @@ class AgentOrchestrator:
         work_items = sweep_all(self.store)
         handoffs = 0
         work_done = 0
+        productive = 0
         actions = []
 
         for item in work_items:
@@ -124,6 +145,19 @@ class AgentOrchestrator:
             prospect = self.store.get_prospect(prospect_id)
             if not prospect or not campaign:
                 continue
+
+            # Skip prospects already waiting on a human. Re-planning them
+            # every cycle achieves nothing but duplicate handoff events
+            # and wasted planner calls - this was the main loop.
+            last_handoff = self.memory.events.last_event_of_type(
+                prospect_id, "handoff_requested")
+            if last_handoff:
+                cleared = self.memory.events.count_events(
+                    prospect_id, "human_cleared")
+                handoff_count = self.memory.events.count_events(
+                    prospect_id, "handoff_requested")
+                if handoff_count > cleared:
+                    continue
 
             ctx = self.memory.get_prospect_context(prospect_id)
             name = (ctx.get("state", {}).get("identity", {}).get("name")
@@ -139,6 +173,32 @@ class AgentOrchestrator:
 
             print(f"[agent]   Plan: {plan.get('action')} — "
                   f"{plan.get('reason', '')}")
+
+            # Circuit breaker: if the SAME action keeps getting proposed
+            # for the SAME prospect cycle after cycle with nothing
+            # changing in between, something is stuck (weak-model
+            # confusion, a bug, a state the planner can't resolve).
+            # Force a handoff instead of repeating it forever.
+            streak_key = (prospect_id, plan.get("action"))
+            if plan.get("action") not in ("wait", "skip", "handoff"):
+                self._streak[streak_key] = self._streak.get(streak_key, 0) + 1
+                for k in list(self._streak):
+                    if k != streak_key and k[0] == prospect_id:
+                        self._streak[k] = 0
+                if self._streak[streak_key] >= self.STREAK_LIMIT:
+                    print(f"  ! {plan.get('action')} proposed "
+                          f"{self._streak[streak_key]}x in a row for "
+                          f"{prospect_id} with no progress - forcing handoff")
+                    self.memory.record_event(
+                        "handoff_requested", prospect_id, campaign_id,
+                        data={"reason": "loop_breaker",
+                              "stuck_action": plan.get("action"),
+                              "streak": self._streak[streak_key]})
+                    self._streak[streak_key] = 0
+                    handoffs += 1
+                    continue
+            else:
+                self._streak[streak_key] = 0
 
             if self.dry_run:
                 actions.append({"prospect_id": prospect_id,
@@ -197,12 +257,18 @@ class AgentOrchestrator:
                             "executed": True})
             work_done += 1
 
-            if result.get("status") == "handed_off":
+            status = result.get("status", "unknown")
+            if status == "handed_off":
                 handoffs += 1
+            elif status not in ("rate_limited", "error", "skipped"):
+                # Only count real progress - a rate-limited or errored
+                # attempt is not progress, and treating it as such was
+                # why the loop only ever slept 2s instead of backing off.
+                productive += 1
+                self._streak[streak_key] = 0
 
             self.memory.save_snapshot(prospect_id)
 
-            status = result.get("status", "unknown")
             print(f"[agent]   Result: {status}")
             if status == "error":
                 print(f"[agent]   ERROR DETAIL: {result.get('error', 'no detail')}")
@@ -211,6 +277,7 @@ class AgentOrchestrator:
             "cycle": self._cycle_count,
             "work_items": len(work_items),
             "work_done": work_done,
+            "productive": productive,
             "handoffs": handoffs,
             "actions": actions,
         }

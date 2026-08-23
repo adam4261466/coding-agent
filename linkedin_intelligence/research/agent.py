@@ -19,9 +19,12 @@ sys.path.insert(0, PROJECT_ROOT)
 
 try:
     from agent import Agent
-except ImportError:
+except Exception as _e:
     Agent = None
-
+    import traceback
+    print("[research/agent.py] FAILED to import agent.py:")
+    traceback.print_exc()
+    
 from ..utils import load_icp
 
 RESEARCH_SYSTEM_PROMPT = """You are a LINKEDIN RESEARCH AGENT. You receive ONE

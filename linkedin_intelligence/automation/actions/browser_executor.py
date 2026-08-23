@@ -37,8 +37,11 @@ if PROJECT_ROOT not in sys.path:
 
 try:
     from agent import Agent
-except ImportError:
+except Exception as _e:
     Agent = None
+    import traceback
+    print("[browser_executor] FAILED to import agent.py:")
+    traceback.print_exc()
 
 
 OBSERVE_SYSTEM_PROMPT = """You are a LINKEDIN OBSERVATION agent. You receive
