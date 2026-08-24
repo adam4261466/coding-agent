@@ -7,7 +7,7 @@ records the funnel.
 Usage:
     python phase3.py --sync                  # create campaigns from YAML
     python phase3.py --assign --campaign ai_engineers --top 10
-    python phase3.py --produce --campaign ai_engineers --limit 5 --model qwen3.5:0.8b
+    python phase3.py --produce --campaign ai_engineers --limit 5 --model gemma4:31b-cloud
     python phase3.py --approve <message_id>
     python phase3.py --reject <message_id> --note "rewrite"
     python phase3.py --mark-sent --campaign ai_engineers --prospect p_xxx
@@ -94,7 +94,7 @@ class OutreachController:
     strings, so callers (e.g. the GUI) must resolve the id first.
     """
 
-    def __init__(self, model="qwen3.5:0.8b", base_url="http://localhost:11434"):
+    def __init__(self, model="gemma4:31b-cloud", base_url="http://localhost:11434"):
         self.model = model
         self.base_url = base_url
         self.store = Store(DB_PATH)
@@ -179,7 +179,7 @@ class OutreachController:
         return data
 
 
-def run_outreach_gui(parent=None, model="qwen3.5:0.8b",
+def run_outreach_gui(parent=None, model="gemma4:31b-cloud",
                      base_url="http://localhost:11434"):
     """Launch the Phase 3 Outreach Control Center.
 
@@ -735,7 +735,7 @@ def build_parser():
     ap.add_argument("--prospect", default=None)
     ap.add_argument("--text", default=None)
     ap.add_argument("--note", default=None)
-    ap.add_argument("--model", default="qwen3.5:0.8b")
+    ap.add_argument("--model", default="gemma4:31b-cloud")
     ap.add_argument("--url", default="http://localhost:11434")
     ap.add_argument("--json", dest="as_json", action="store_true")
     return ap

@@ -15,6 +15,8 @@ STATE SECTIONS:
   campaign       — which campaign, sequence progress, next action
 """
 
+
+from ...timeutil import iso as _now_iso
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -120,7 +122,7 @@ class StateStore:
         }
 
     def _save(self, prospect_id: str, column: str, data: dict):
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         existing = self.conn.execute(
             "SELECT prospect_id FROM prospect_state WHERE prospect_id = ?",
             (prospect_id,)).fetchone()

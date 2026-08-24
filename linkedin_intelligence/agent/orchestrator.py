@@ -25,7 +25,7 @@ from .planner import plan_next_action
 from .executor import execute_plan
 
 
-DEFAULT_MODEL = "qwen3.5:0.8b"
+DEFAULT_MODEL = "gemma4:31b-cloud"
 DEFAULT_BASE_URL = "http://localhost:11434"
 
 

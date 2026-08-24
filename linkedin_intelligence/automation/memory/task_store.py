@@ -16,6 +16,8 @@ TASK STATUSES:
   failed    — goal cannot be achieved
 """
 
+
+from ...timeutil import iso as _now_iso
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -60,7 +62,7 @@ class TaskStore:
                     initial_steps: list = None) -> dict:
         """Create a new task. Returns the task dict."""
         import uuid
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         task_id = "task_" + uuid.uuid4().hex[:10]
         task = {
             "task_id": task_id,
@@ -114,7 +116,7 @@ class TaskStore:
             task["pending"].remove(step)
         if step not in task["completed"]:
             task["completed"].append(step)
-        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task["updated_at"] = _now_iso()
         self._save_task(task)
 
     def fail_step(self, task_id: str, step: str, reason: str = None):
@@ -126,7 +128,7 @@ class TaskStore:
         entry = {"step": step, "reason": reason}
         if entry not in task["failed"]:
             task["failed"].append(entry)
-        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task["updated_at"] = _now_iso()
         self._save_task(task)
 
     def block_step(self, task_id: str, step: str, reason: str = None):
@@ -138,7 +140,7 @@ class TaskStore:
         entry = {"step": step, "reason": reason}
         if entry not in task["blocked"]:
             task["blocked"].append(entry)
-        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task["updated_at"] = _now_iso()
         self._save_task(task)
 
     def set_next_action(self, task_id: str, action_type: str,
@@ -151,7 +153,7 @@ class TaskStore:
             "reason": reason,
             "params": params or {},
         }
-        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task["updated_at"] = _now_iso()
         self._save_task(task)
 
     def complete_task(self, task_id: str, result: dict = None):
@@ -160,7 +162,7 @@ class TaskStore:
             return
         task["status"] = "completed"
         task["result"] = result or {}
-        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task["updated_at"] = _now_iso()
         self._save_task(task)
 
     def fail_task(self, task_id: str, reason: str = None):
@@ -169,7 +171,7 @@ class TaskStore:
             return
         task["status"] = "failed"
         task["result"] = {"reason": reason}
-        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task["updated_at"] = _now_iso()
         self._save_task(task)
 
     def progress(self, task_id: str) -> dict:
@@ -192,7 +194,7 @@ class TaskStore:
         }
 
     def _save_task(self, task: dict):
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         task["updated_at"] = now
         self.conn.execute(
             """INSERT OR REPLACE INTO tasks

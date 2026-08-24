@@ -16,7 +16,7 @@ The planner sees:
 import json
 import requests
 
-DEFAULT_MODEL = "qwen3.5:0.8b"
+DEFAULT_MODEL = "gemma4:31b-cloud"
 DEFAULT_BASE_URL = "http://localhost:11434"
 
 PLANNER_SYSTEM_PROMPT = """You are a LinkedIn outreach PLANNER. You decide

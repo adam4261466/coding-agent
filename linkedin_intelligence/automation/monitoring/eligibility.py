@@ -6,11 +6,13 @@ become eligible for outreach (follow-ups due, conversations to handle, etc.).
 
 from datetime import datetime, timezone
 
+from ...timeutil import now as _now
+
 
 def sweep_follow_ups(store, campaigns: list) -> list:
     """Find all prospects eligible for follow-up across all active campaigns."""
     from ...outreach.sequence import due_follow_ups
-    now = datetime.now(timezone.utc)
+    now = _now()
     results = []
     for campaign in campaigns:
         if campaign.get("status") not in ("active", "synced"):

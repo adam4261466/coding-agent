@@ -194,6 +194,8 @@ def test_planner_is_deterministic_profile_first(tmp_path):
         assert step == {"action": "observe_profile"}
 
         op.memory.record_event("profile_observed", "p1")
+        op.memory.record_fact("p1", "observed", "role: AI Engineer",
+                              source="test")
         step = op.plan_step(entry["prospect"], entry["record"])
         assert step == {"action": "send_connection_request"}
 
@@ -419,6 +421,112 @@ def test_repeated_failures_trip_circuit_breaker(tmp_path):
         r4 = op.run_once()
         assert r4["status"] == "idle"
         assert len(op.browser.observes) == attempts_after_breaker
+    finally:
+        store.close()
+        op.memory.close()
+
+
+def test_milestones_survive_event_window_overflow(tmp_path):
+    """Regression: milestones must come from full history, not the
+    20-event recent context. 30 noise events must not make the operator
+    forget an observation or a sent invitation."""
+    store, op = _make_operator(tmp_path)
+    try:
+        store.upsert_prospects([_prospect()])
+        store.set_permission("p1", permission="allowed",
+                             flags={"view_profile": True,
+                                    "send_connection": True})
+        op.memory.record_event("profile_observed", "p1",
+                               data={"success": True})
+        op.memory.record_fact("p1", "observed", "role: AI Engineer",
+                              source="test")
+        op.memory.record_event("connection_sent", "p1")
+        op.memory.state.update_relationship("p1",
+                                            connection_status="pending")
+        for i in range(30):
+            op.memory.record_event("noise", "p1", data={"i": i})
+
+        entry = op.queue.next()
+        step = op.plan_step(entry["prospect"], entry["record"])
+        # pending acceptance -> nothing to do; definitely NOT a re-observe
+        # or a second connection request
+        assert step is None
+    finally:
+        store.close()
+        op.memory.close()
+
+
+def test_execute_skips_already_done_task(tmp_path):
+    """Asking for a finished task again (e.g. profile view) must skip,
+    not re-run it against LinkedIn."""
+    store, op = _make_operator(tmp_path)
+    try:
+        store.upsert_prospects([_prospect()])
+        store.set_permission("p1", **_allow_all())
+        op.memory.record_event("profile_observed", "p1",
+                               data={"success": True})
+        op.memory.record_fact("p1", "observed", "role: AI Engineer",
+                              source="test")
+        entry = op.queue.next()
+        result = op.execute(entry["prospect"], entry["record"],
+                            {"action": "observe_profile"})
+        assert result["status"] == "already_done"
+        assert op.browser.observes == []
+        types = [e["event_type"]
+                 for e in op.memory.events.recent_events("p1")]
+        assert "action_skipped" in types
+        # and the planner agrees: observe is finished, so it never plans it
+        # again - it moves straight to the next permitted task
+        step = op.plan_step(entry["prospect"], entry["record"])
+        assert step != {"action": "observe_profile"}
+    finally:
+        store.close()
+        op.memory.close()
+
+
+def test_tick_moves_past_rate_limited_person(tmp_path, monkeypatch):
+    import linkedin_intelligence.agent.operator as op_module
+    store, op = _make_operator(tmp_path)
+    monkeypatch.setattr(
+        op_module, "check_rate_limit",
+        lambda ev, action, pid, now=None: pid != "p1")
+    try:
+        store.upsert_prospects([_prospect("p1", "Ada Lovelace", score=90),
+                                _prospect("p2", "Bob Chen", score=80)])
+        store.set_permission("p1", permission="allowed",
+                             flags={"view_profile": True})
+        store.set_permission("p2", permission="allowed",
+                             flags={"view_profile": True})
+        result = op.run_once()
+        # p1 was first in line but cooling down -> p2 got the work
+        assert result["status"] == "executed"
+        assert result["person"] == "Bob Chen"
+        assert len(op.browser.observes) == 1
+        # p1's URL was never opened
+        assert all("p1" not in u for u in op.browser.observes)
+    finally:
+        store.close()
+        op.memory.close()
+
+
+def test_poisoned_success_is_not_treated_as_done(tmp_path):
+    """Legacy rows logged success=True with an abort message as summary
+    (pre-abort-guard era) must be re-observed, not trusted."""
+    store, op = _make_operator(tmp_path)
+    try:
+        store.upsert_prospects([_prospect()])
+        store.set_permission("p1", **_allow_all())
+        op.memory.record_event(
+            "profile_observed", "p1",
+            data={"success": True,
+                  "summary": "Cannot connect to Ollama. Is it running?"})
+        entry = op.queue.next()
+        assert op.plan_step(entry["prospect"],
+                            entry["record"]) == {"action": "observe_profile"}
+        result = op.execute(entry["prospect"], entry["record"],
+                            {"action": "observe_profile"})
+        assert result["status"] == "executed"
+        assert len(op.browser.observes) == 1
     finally:
         store.close()
         op.memory.close()

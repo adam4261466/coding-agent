@@ -6,6 +6,8 @@ decides. An objection always routes to human-approved response drafting,
 never to an automatic rebuttal.
 """
 
+
+from ..timeutil import iso as _now_iso
 import json
 import re
 import requests
@@ -16,7 +18,7 @@ from .message_generator import build_context
 from .objections import objection_category, OBJECTION_CATEGORIES
 from .state_machine import transition, validate_state
 
-DEFAULT_MODEL = "qwen3.5:0.8b"
+DEFAULT_MODEL = "gemma4:31b-cloud"
 DEFAULT_BASE_URL = "http://localhost:11434"
 
 INTENTS = ("question", "interest", "objection", "opt_out", "not_interested",
@@ -214,7 +216,7 @@ def prepare_objection_draft(store, prospect: dict, campaign: dict,
         "approved": False,
         "validation": [],
         "status": "pending_review",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": _now_iso(),
     }
     try:
         resp = requests.post(f"{base_url}/api/chat", json=payload, timeout=timeout)

@@ -9,11 +9,12 @@ follow-up budget (max_follow_ups) has not been exhausted.
 from datetime import datetime, timedelta, timezone
 
 from ..utils import campaign_config
+from ..timeutil import now as _now_local
 from .state_machine import transition
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return _now_local()
 
 
 def follow_up_config(campaign: dict) -> dict:

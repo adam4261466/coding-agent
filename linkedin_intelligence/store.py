@@ -1,3 +1,4 @@
+from .timeutil import iso as _now_iso
 """SQLite storage for prospects, conversations, exclusions, evidence, tasks."""
 
 import json
@@ -418,7 +419,7 @@ class Store:
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             ("ev_" + uuid.uuid4().hex[:10], prospect_id, claim, observation,
              source, source_type, confidence, collector, research_task_id,
-             created_at or datetime.now(timezone.utc).isoformat()))
+             created_at or _now_iso()))
         self.conn.commit()
 
     def add_inference(self, prospect_id: str, claim: str,
@@ -437,7 +438,7 @@ class Store:
             ("ev_" + uuid.uuid4().hex[:10], prospect_id, claim,
              json.dumps(evidence_basis or []), "llm_reasoning", "inference",
              confidence, collector, research_task_id,
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
 
     def evidence_for(self, prospect_id: str) -> list:
@@ -517,7 +518,7 @@ class Store:
              json.dumps(q.get("contradictions", [])),
              q.get("research_stage", "acquisition"),
              q.get("model"),
-             q.get("created_at") or datetime.now(timezone.utc).isoformat()))
+             q.get("created_at") or _now_iso()))
         self.conn.commit()
 
     def qualifications(self) -> list:
@@ -550,7 +551,7 @@ class Store:
                (prospect_id, action, reason, status_before, created_at)
                VALUES (?,?,?,?,?)""",
             (prospect_id, action, reason, status_before,
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
 
     def feedback(self, prospect_id: str = None) -> list:
@@ -572,7 +573,7 @@ class Store:
              campaign.get("objective"), campaign.get("strategy"),
              campaign.get("status", "draft"),
              json.dumps(campaign.get("config", {}), ensure_ascii=False),
-             campaign.get("created_at") or datetime.now(timezone.utc).isoformat()))
+             campaign.get("created_at") or _now_iso()))
         self.conn.commit()
 
     def campaigns(self, status: str = None) -> list:
@@ -611,7 +612,7 @@ class Store:
                VALUES (?,?,?,?,?,?,?)""",
             (cp["campaign_id"], cp["prospect_id"], cp.get("status", "CAMPAIGN_ASSIGNED"),
              cp.get("priority"), cp.get("assigned_strategy"),
-             cp.get("entered_at") or datetime.now(timezone.utc).isoformat(),
+             cp.get("entered_at") or _now_iso(),
              cp.get("last_action")))
         self.conn.commit()
 
@@ -644,7 +645,7 @@ class Store:
         self.conn.execute(
             "UPDATE campaign_prospects SET status = ?, last_action = ? "
             "WHERE campaign_id = ? AND prospect_id = ?",
-            (status, datetime.now(timezone.utc).isoformat(),
+            (status, _now_iso(),
              campaign_id, prospect_id))
         self.conn.commit()
 
@@ -663,7 +664,7 @@ class Store:
              1 if msg.get("approved") else 0,
              json.dumps(msg.get("validation", []), ensure_ascii=False),
              msg.get("status", "pending_review"),
-             msg.get("created_at") or datetime.now(timezone.utc).isoformat()))
+             msg.get("created_at") or _now_iso()))
         self.conn.commit()
 
     def messages_for(self, prospect_id: str = None, campaign_id: str = None,
@@ -717,7 +718,7 @@ class Store:
                (prospect_id, campaign_id, from_state, to_state, event, note, created_at)
                VALUES (?,?,?,?,?,?,?)""",
             (prospect_id, campaign_id, from_state, to_state, event, note,
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
 
     def outreach_events(self, prospect_id: str = None,
@@ -745,7 +746,7 @@ class Store:
              c.get("commercial_intent"), c.get("objection"),
              c.get("confidence"),
              json.dumps(c.get("raw", ""), ensure_ascii=False),
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
 
     def conversations_outreach(self, prospect_id: str = None) -> list:
@@ -767,7 +768,7 @@ class Store:
                VALUES (?,?,?,?,?,?)""",
             (prospect_id, campaign_id, message_id, event_name,
              json.dumps(meta or {}, ensure_ascii=False),
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
 
     def product_events(self, prospect_id: str = None,
@@ -802,7 +803,7 @@ class Store:
              exp.get("variant"), exp.get("segment"), exp.get("primary_metric"),
              exp.get("minimum_sample"), exp.get("status", "running"),
              json.dumps(exp.get("result", {}), ensure_ascii=False),
-             exp.get("created_at") or datetime.now(timezone.utc).isoformat()))
+             exp.get("created_at") or _now_iso()))
         self.conn.commit()
 
     def experiments(self, status: str = None) -> list:
@@ -876,7 +877,7 @@ class Store:
              current["view_profile"], current["send_connection"],
              current["send_message"], current["reply"], current["follow_up"],
              current["blocked"], current.get("notes"),
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
         return self.get_permissions(prospect_id)
 
@@ -907,7 +908,7 @@ class Store:
             "INSERT INTO segments (name, description, prospects, created_at) "
             "VALUES (?,?,?,?)",
             (name, description, json.dumps(ids),
-             datetime.now(timezone.utc).isoformat()))
+             _now_iso()))
         self.conn.commit()
 
     def stats(self) -> dict:

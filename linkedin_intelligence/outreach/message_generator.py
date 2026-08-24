@@ -10,6 +10,8 @@ The validator is applied to every generated message before it enters the
 approval queue.
 """
 
+
+from ..timeutil import iso as _now_iso
 import json
 import re
 import uuid
@@ -20,7 +22,7 @@ from ..utils import load_icp
 from ..research.evidence import evidence_block, offline_evidence
 from .message_strategy import get_strategy
 
-DEFAULT_MODEL = "qwen3.5:0.8b"
+DEFAULT_MODEL = "gemma4:31b-cloud"
 DEFAULT_BASE_URL = "http://localhost:11434"
 
 
@@ -191,7 +193,7 @@ def generate_message(store, prospect: dict, campaign: dict,
         "approved": False,
         "validation": [],
         "status": "pending_review",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": _now_iso(),
     }
 
     try:

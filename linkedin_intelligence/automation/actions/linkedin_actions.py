@@ -39,15 +39,25 @@ def _wrap_literal(text: str) -> str:
 
 
 def observe_profile(executor, prospect: dict) -> dict:
-    """Navigate to a LinkedIn profile and observe its current state."""
+    """Navigate to a LinkedIn profile and observe its current state.
+
+    BOUNDED: a small browser model given an open-ended objective will
+    tour the profile forever (scroll/snapshot loops). The instruction
+    fixes a hard shape - one snapshot, at most one scroll, extract a
+    short list of fields, STOP - and max_steps enforces it."""
     url = prospect.get("linkedin_url")
     if not url:
         return {"success": False, "error": "no linkedin_url"}
     return executor.observe(
         url=url,
-        instruction="observe the profile: current role, company, recent activity, "
-                    "about section, and any signals of interest or pain",
-        max_steps=12,
+        instruction=(
+            "open the profile and take ONE snapshot. Optionally scroll "
+            "down ONCE and take ONE more snapshot. Then STOP immediately "
+            "and return findings with ONLY these fields if visible: "
+            "full name, current role, company, connection degree, "
+            "location, and up to 3 recent activity signals. "
+            "Do NOT keep exploring."),
+        max_steps=7,
     )
 
 

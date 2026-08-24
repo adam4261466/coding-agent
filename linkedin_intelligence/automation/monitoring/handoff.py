@@ -63,7 +63,8 @@ DAILY_CAPS = {
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    from ...timeutil import now as _now
+    return _now()
 
 
 def handoff_needed(event_store: EventStore, reason: str, prospect_id: str,

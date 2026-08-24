@@ -39,6 +39,8 @@ ACTION LOG (`action_log` table):
   automation/monitoring/handoff.py for the rate limiter that reads this.
 """
 
+
+from ...timeutil import iso as _now_iso
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -97,7 +99,7 @@ class EventStore:
             "data": data or {},
             "source": source,
             "confidence": confidence,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": _now_iso(),
         }
         self.conn.execute(
             """INSERT INTO events

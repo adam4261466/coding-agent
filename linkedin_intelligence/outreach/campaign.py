@@ -3,6 +3,8 @@ select the next outbound batch. All decisions are deterministic rules - the
 LLM is never asked who to contact or in what order.
 """
 
+
+from ..timeutil import iso as _now_iso
 import uuid
 from datetime import datetime, timezone
 
@@ -26,7 +28,7 @@ def create_campaign(store, cfg: dict, campaign_id: str = None,
         "status": (created or {}).get("status", status),
         "config": cfg,
         "created_at": (created or {}).get("created_at")
-        or datetime.now(timezone.utc).isoformat(),
+        or _now_iso(),
     }
     store.save_campaign(campaign)
     return campaign
@@ -91,7 +93,7 @@ def assign_prospects(store, campaign: dict, prospects: list,
             "status": "CAMPAIGN_ASSIGNED",
             "priority": p.get("outreach_priority", _priority(p)),
             "assigned_strategy": strategy,
-            "entered_at": datetime.now(timezone.utc).isoformat(),
+            "entered_at": _now_iso(),
             "last_action": None,
         }
         store.assign_campaign_prospect(cp)

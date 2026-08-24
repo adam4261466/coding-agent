@@ -83,6 +83,10 @@ BUCKET_STYLE = {
     "blocked": ("BLOCKED PEOPLE", RED),
 }
 
+BOX_EMPTY = "\u2610"
+BOX_CHECKED = "\u2611"
+BOX_PARTIAL = "\u25a3"
+
 FLAG_LABELS = {
     "view_profile": "View profiles",
     "send_connection": "Connect",
@@ -114,6 +118,7 @@ class Workstation:
         self._running = False
         self._selected_pid = None
         self._queue_entries = {}
+        self._checked = set()
         self._loading_perms = False
 
         self._build_style()
@@ -199,15 +204,76 @@ class Workstation:
         head.pack_propagate(False)
         tk.Label(head, text="PROSPECT QUEUE", font=(FONT, 11, "bold"),
                  fg=TEXT, bg=PANEL_2).pack(side=tk.LEFT, padx=12)
+        tk.Label(head, text="SEARCH:", font=(FONT, 9), fg=MUTED,
+                 bg=PANEL_2).pack(side=tk.LEFT, padx=(6, 2))
+        self.search_var = tk.StringVar()
+        search_entry = tk.Entry(head, textvariable=self.search_var,
+                                font=(FONT, 9), fg=TEXT, bg=PANEL_2,
+                                relief=tk.FLAT, insertbackground=TEXT)
+        search_entry.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+        search_entry.bind("<KeyRelease>", self._on_search_change)
         self.queue_summary_label = tk.Label(head, text="", font=(MONO, 9),
                                             fg=MUTED, bg=PANEL_2)
         self.queue_summary_label.pack(side=tk.RIGHT, padx=12)
 
-        cols = ("dot", "person", "company", "next")
-        self.queue_tree = ttk.Treeview(wrap, columns=cols, show="tree headings",
+        bulk = tk.Frame(wrap, bg=PANEL_2)
+        bulk.pack(side=tk.BOTTOM, fill=tk.X)
+        tk.Label(bulk, text="BULK:", font=(FONT, 9, "bold"), fg=MUTED,
+                 bg=PANEL_2).pack(side=tk.LEFT, padx=(12, 4))
+        self.bulk_label = tk.Label(bulk, text="0 selected",
+                                   font=(MONO, 9), fg=CYAN, bg=PANEL_2)
+        self.bulk_label.pack(side=tk.LEFT)
+        self.bulk_allow = tk.Button(
+            bulk, text="ALLOW (with shown flags)",
+            command=lambda: self._bulk_apply("allowed"),
+            font=(FONT, 9, "bold"), fg=BG, bg=GREEN, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_allow.pack(side=tk.LEFT, padx=6, pady=5)
+        self.bulk_manual = tk.Button(
+            bulk, text="MANUAL", command=lambda: self._bulk_apply("manual"),
+            font=(FONT, 9, "bold"), fg=BG, bg=YELLOW, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_manual.pack(side=tk.LEFT, padx=6)
+        self.bulk_block = tk.Button(
+            bulk, text="BLOCK", command=lambda: self._bulk_apply("blocked"),
+            font=(FONT, 9, "bold"), fg=BG, bg=RED, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_block.pack(side=tk.LEFT, padx=6)
+        self.bulk_view = tk.Button(
+            bulk, text="VIEW PROFILE", command=lambda: self._bulk_apply("view_profile"),
+            font=(FONT, 9, "bold"), fg=BG, bg=CYAN, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_view.pack(side=tk.LEFT, padx=6, pady=5)
+        self.bulk_message = tk.Button(
+            bulk, text="MESSAGE", command=lambda: self._bulk_apply("send_message"),
+            font=(FONT, 9, "bold"), fg=BG, bg=BLUE, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_message.pack(side=tk.LEFT, padx=6)
+        self.bulk_reply = tk.Button(
+            bulk, text="REPLY", command=lambda: self._bulk_apply("reply"),
+            font=(FONT, 9, "bold"), fg=BG, bg=ORANGE, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_reply.pack(side=tk.LEFT, padx=6, pady=5)
+        self.bulk_followup = tk.Button(
+            bulk, text="FOLLOW UP", command=lambda: self._bulk_apply("follow_up"),
+            font=(FONT, 9, "bold"), fg=BG, bg=YELLOW, relief=tk.FLAT,
+            padx=8, state=tk.DISABLED, cursor="hand2")
+        self.bulk_followup.pack(side=tk.LEFT, padx=6)
+        tk.Label(bulk, text="(ALLOW copies the flag ticks shown in "
+                            "CURRENT PERSON)",
+                 font=(FONT, 8), fg=MUTED, bg=PANEL_2).pack(side=tk.LEFT,
+                                                             padx=8)
+
+        cols = ("sel", "dot", "person", "company", "next")
+        self.queue_tree = ttk.Treeview(wrap, columns=cols,
+                                       show="tree headings",
                                        selectmode="browse")
         self.queue_tree.heading("#0", text="")
         self.queue_tree.column("#0", width=0, stretch=False)
+        self.queue_tree.heading(
+            "sel", text=BOX_EMPTY, command=self._toggle_all_checks)
+        self.queue_tree.column("sel", width=34, anchor=tk.CENTER,
+                               stretch=False)
         self.queue_tree.heading("dot", text="")
         self.queue_tree.column("dot", width=36, anchor=tk.CENTER,
                                stretch=False)
@@ -229,6 +295,116 @@ class Workstation:
                              padx=(6, 0), pady=6)
         vsb.pack(side=tk.LEFT, fill=tk.Y, pady=6, padx=(0, 6))
         self.queue_tree.bind("<<TreeviewSelect>>", self._on_select_person)
+        self.queue_tree.bind("<Button-1>", self._on_queue_click)
+
+    # ---- bulk selection ----
+
+    def _on_queue_click(self, event):
+        tree = self.queue_tree
+        region = tree.identify_region(event.x, event.y)
+        if region == "heading":
+            if tree.identify_column(event.x) == "#1":
+                # "break" suppresses the class binding that would fire the
+                # heading command too - so invoke it here, exactly once.
+                self._toggle_all_checks()
+                return "break"
+            return None
+        if region != "cell":
+            return None
+        if tree.identify_column(event.x) != "#1":
+            return None
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return None
+        if iid.startswith("bucket:"):
+            key = iid.split(":", 1)[1]
+            kids = [c.split(":", 1)[1]
+                    for c in tree.get_children(f"bucket:{key}")]
+            all_checked = bool(kids) and \
+                all(p in self._checked for p in kids)
+            if all_checked:
+                self._checked -= set(kids)
+            else:
+                self._checked |= set(kids)
+        else:
+            pid = iid.split(":", 1)[1]
+            if pid in self._checked:
+                self._checked.discard(pid)
+            else:
+                self._checked.add(pid)
+        self._sync_check_glyphs()
+        return "break"
+
+    def _toggle_all_checks(self):
+        all_pids = {e["prospect"]["prospect_id"]
+                    for e in self._queue_entries.values()}
+        if self._checked and self._checked >= all_pids:
+            self._checked.clear()
+        else:
+            self._checked |= all_pids
+        self._sync_check_glyphs()
+
+    def _sync_check_glyphs(self):
+        tree = self.queue_tree
+        total = len(self._queue_entries)
+        for key in ("allowed", "manual", "blocked"):
+            kids = [c.split(":", 1)[1]
+                    for c in tree.get_children(f"bucket:{key}")]
+            n = sum(1 for p in kids if p in self._checked)
+            glyph = BOX_EMPTY
+            if kids and n == len(kids):
+                glyph = BOX_CHECKED
+            elif 0 < n < len(kids):
+                glyph = BOX_PARTIAL
+            try:
+                tree.set(f"bucket:{key}", "sel", glyph)
+            except tk.TclError:
+                pass
+        tree.heading("sel", text=BOX_CHECKED
+                     if total and len(self._checked) >= total else BOX_EMPTY)
+        self.bulk_label.config(text=f"{len(self._checked)} selected")
+        state = tk.NORMAL if self._checked else tk.DISABLED
+        for btn in (self.bulk_allow, self.bulk_manual, self.bulk_block,
+                self.bulk_view, self.bulk_message,
+                self.bulk_reply, self.bulk_followup):
+            btn.config(state=state)
+
+    def _bulk_apply(self, level: str):
+        pids = sorted(self._checked)
+        if not pids:
+            return
+        if not messagebox.askyesno(
+                "Bulk permissions",
+                f"Set {level.upper()} for {len(pids)} people?"):
+            return
+        flags = None
+        if level == "allowed":
+            flags = {f: v.get() for f, v in self.flag_vars.items()}
+        elif level == "view_profile":
+            flags = {"view_profile": True}
+        elif level == "send_message":
+            flags = {"send_message": True}
+        elif level == "reply":
+            flags = {"reply": True}
+        elif level == "follow_up":
+            flags = {"follow_up": True}
+        for pid in pids:
+            record = self.store.set_permission(pid, permission=level,
+                                               flags=flags)
+            self.store.set_status(pid, record["permission"])
+            self.memory.record_event(
+                "permissions_changed", pid,
+                data={"permission": level, "bulk": True, "flags": flags},
+                source="human")
+        self.perm_status.config(
+            text=f"bulk {level}: {len(pids)} people at "
+                 f"{datetime.now().strftime('%H:%M:%S')}", fg=GREEN)
+        self._checked.clear()
+        self._refresh_queue()
+        entry = self._find_entry(self._selected_pid) \
+            if self._selected_pid else None
+        if entry:
+            self._render_person(entry)
 
     def _build_person_panel(self, parent):
         wrap = tk.Frame(parent, bg=PANEL, highlightthickness=1,
@@ -364,21 +540,30 @@ class Workstation:
         tree.delete(*tree.get_children())
         self._queue_entries = {}
 
+        search_text = self.search_var.get().lower()
+
         total = sum(len(v) for v in buckets.values())
+        displayed = 0
         self.queue_summary_label.config(
             text=f"{len(buckets['allowed'])} allowed / "
                  f"{len(buckets['manual'])} review / "
                  f"{len(buckets['blocked'])} blocked / {total} total")
 
+        live_pids = set()
         for key in ("allowed", "manual", "blocked"):
             title, color = BUCKET_STYLE[key]
             parent = tree.insert("", "end", iid=f"bucket:{key}",
                                  open=True, text="",
-                                 values=("", f"{title} ({len(buckets[key])})",
+                                 values=(BOX_EMPTY,
+                                         f"{title} ({len(buckets[key])})",
                                          "", ""),
                                  tags=(f"bucket_{key}",))
             for i, entry in enumerate(buckets[key]):
                 pid = entry["prospect"]["prospect_id"]
+                full_name = entry["prospect"].get("full_name") or ""
+                if search_text and search_text not in full_name.lower():
+                    continue
+                live_pids.add(pid)
                 record = normalize(entry["record"])
                 nxt = self._next_action_label(key, entry)
                 dot = "\u25cf" if key == "allowed" else \
@@ -386,14 +571,21 @@ class Workstation:
                 iid = f"{key}:{pid}"
                 self._queue_entries[iid] = entry
                 tree.insert(parent, "end", iid=iid,
-                            values=(dot,
-                                    entry["prospect"].get("full_name") or pid,
+                            values=(BOX_CHECKED if pid in self._checked
+                                    else BOX_EMPTY,
+                                    dot,
+                                    full_name,
                                     entry["prospect"].get("current_company")
                                     or "-",
                                     nxt),
                             tags=("current",) if pid == selected else ())
+                displayed += 1
+        self._checked &= live_pids
+        self._sync_check_glyphs()
         if selected:
             self._show_current_running(selected)
+        self.queue_summary_label.config(
+            text=f"{displayed} of {total} shown")
 
     def _next_action_label(self, bucket_key: str, entry) -> str:
         if bucket_key == "blocked":
@@ -413,6 +605,9 @@ class Workstation:
             "reply": "handle reply",
             "follow_up": "follow up",
         }.get(step["action"], step["action"])
+
+    def _on_search_change(self, event=None):
+        self._refresh_queue()
 
     def _on_select_person(self, _event=None):
         sel = self.queue_tree.selection()

@@ -29,7 +29,8 @@ BLOCKED_STATUSES = {"do_not_contact", "not_relevant", "already_customer",
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    from ..timeutil import now as _now_local
+    return _now_local()
 
 
 def _eval(checks: list) -> tuple:

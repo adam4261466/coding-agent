@@ -1,6 +1,8 @@
 """Hypothesis generation - deterministic, data-driven. Hypotheses are
 suggestions for the human; they never change behavior by themselves."""
 
+
+from ..timeutil import iso as _now_iso
 import uuid
 from datetime import datetime, timezone
 
@@ -59,6 +61,6 @@ def generate_hypotheses(store, funnel: dict = None,
 
     for h in out:
         h["hypothesis_id"] = "hyp_" + uuid.uuid4().hex[:6]
-        h["created_at"] = datetime.now(timezone.utc).isoformat()
+        h["created_at"] = _now_iso()
         h["status"] = "suggested"
     return out

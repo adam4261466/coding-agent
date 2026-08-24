@@ -12,6 +12,8 @@ and gets:
 This is the ONLY interface the planner uses.
 """
 
+
+from ...timeutil import iso as _now_iso
 from ...db import connect as db_connect
 
 from datetime import datetime, timezone
@@ -124,7 +126,7 @@ class MemoryService:
             self.state.update_relationship(
                 prospect_id,
                 connection_status="pending",
-                last_contact_at=datetime.now(timezone.utc).isoformat())
+                last_contact_at=_now_iso())
             rel = self.state.get_state(prospect_id).get("relationship", {})
             self.state.update_relationship(
                 prospect_id,
@@ -139,7 +141,7 @@ class MemoryService:
         elif event_type == "message_sent":
             self.state.update_relationship(
                 prospect_id,
-                last_contact_at=datetime.now(timezone.utc).isoformat())
+                last_contact_at=_now_iso())
             rel = self.state.get_state(prospect_id).get("relationship", {})
             self.state.update_relationship(
                 prospect_id,
@@ -155,7 +157,7 @@ class MemoryService:
                 prospect_id,
                 status="active",
                 last_message_direction="prospect",
-                last_message_at=datetime.now(timezone.utc).isoformat())
+                last_message_at=_now_iso())
 
         elif event_type == "reply_classified":
             self.state.update_conversation(

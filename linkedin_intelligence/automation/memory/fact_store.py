@@ -26,6 +26,8 @@ FACT TYPES:
   relationship    — connected, replied, engaged
 """
 
+
+from ...timeutil import iso as _now_iso
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -80,7 +82,7 @@ class FactStore:
         """Add a fact. If an active fact with the same predicate+object
         exists, supersede it. Returns the fact dict."""
         import uuid
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         source_trust = SOURCE_TRUST.get(source, 0.5)
         effective_confidence = round(source_trust * confidence, 3)
 
@@ -145,7 +147,7 @@ class FactStore:
 
     def supersede_all(self, prospect_id: str, predicate: str):
         """Supersede all active facts for a predicate (mark as historical)."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         self.conn.execute(
             "UPDATE facts SET superseded_at = ? "
             "WHERE prospect_id = ? AND predicate = ? AND superseded_at IS NULL",

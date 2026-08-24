@@ -10,6 +10,8 @@ A snapshot contains:
   - Key facts (from fact_store)
 """
 
+
+from ...timeutil import iso as _now_iso
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -46,7 +48,7 @@ class SnapshotStore:
                       events: list = None, facts: list = None) -> dict:
         """Save a point-in-time snapshot. Returns the snapshot dict."""
         import uuid
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         snapshot_id = "snap_" + uuid.uuid4().hex[:10]
         snapshot = {
             "snapshot_id": snapshot_id,

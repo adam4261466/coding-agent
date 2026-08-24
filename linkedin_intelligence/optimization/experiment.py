@@ -2,6 +2,8 @@
 vs variant on a primary metric with a minimum sample. No experiment changes
 the system - it only reports a verdict the human acts on."""
 
+
+from ..timeutil import iso as _now_iso
 import uuid
 from datetime import datetime, timezone
 
@@ -25,7 +27,7 @@ def create_experiment(store, hypothesis: str, control: str, variant: str,
         "minimum_sample": minimum_sample,
         "status": "running",
         "result": {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": _now_iso(),
     }
     store.save_experiment(exp)
     return exp

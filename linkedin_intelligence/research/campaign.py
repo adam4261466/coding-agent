@@ -12,6 +12,8 @@ entered the batch, and the task records its stage so downstream logic can
 compare acquisition vs discovery outcomes.
 """
 
+
+from ..timeutil import iso as _now_iso
 import uuid
 from datetime import datetime, timezone
 from collections import Counter
@@ -276,7 +278,7 @@ def build_research_tasks(store, limit: int = None, selected_ids: list = None,
                 "max_pages": 1, "max_evidence": 8,
             },
             "status": "pending",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": _now_iso(),
         })
     store.create_research_tasks(tasks)
     return tasks

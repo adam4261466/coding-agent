@@ -14,6 +14,7 @@ One tick processes exactly ONE gated action for exactly ONE person:
   5. MEMORY      - event + action log + snapshot after every attempt
 """
 
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -33,8 +34,79 @@ from ..outreach.state_machine import transition
 from .permissions import allows, normalize
 from .queue import ProspectQueue
 
-DEFAULT_MODEL = "qwen3.5:0.8b"
+DEFAULT_MODEL = "gemma4:31b-cloud"
 DEFAULT_BASE_URL = "http://localhost:11434"
+
+# Browser-model field names -> identity keys used by memory state.
+_OBS_IDENTITY_FIELDS = {
+    "full_name": "name",
+    "name": "name",
+    "current_role": "role",
+    "role": "role",
+    "position": "role",
+    "company": "company",
+    "current_company": "company",
+}
+_ABORT_MARKERS = ("cannot connect to ollama", "is it running?",
+                  "llm error", "agent aborted")
+
+
+def _parse_observation(result: dict) -> tuple:
+    """Normalize what the browser agent returned into
+    (findings[str], identity{}, extras[str]).
+
+    Two shapes arrive in practice: the agreed {findings:[...], summary}
+    object, and free-form JSON ({full_name, current_role, company, ...})
+    which small models emit even when told otherwise - often wrapped in
+    ```json fences. Both must yield structured data, otherwise nothing
+    reaches the fact store."""
+    import json as _json
+
+    findings, identity, extras = [], {}, []
+
+    def absorb(obj: dict):
+        for key, value in obj.items():
+            lk = str(key).strip().lower()
+            target = _OBS_IDENTITY_FIELDS.get(lk)
+            if target and value and not identity.get(target):
+                identity[target] = str(value)[:200]
+            elif lk in ("connection_degree", "connectiondegree",
+                        "location") and value:
+                extras.append(f"{lk}: {value}"[:200])
+        for key in ("recent_activity_signals", "signals", "activity"):
+            v = obj.get(key)
+            if isinstance(v, list):
+                extras.extend(str(x)[:200] for x in v[:3])
+
+    for f in result.get("observations") or []:
+        if isinstance(f, dict):
+            claim = f.get("claim")
+            findings.append(str(claim or _json.dumps(f,
+                                                     ensure_ascii=False))[:300])
+            absorb(f)
+        else:
+            findings.append(str(f)[:300])
+
+    summary = str(result.get("summary") or "")
+    m = re.search(r"\{.*\}", summary, re.DOTALL)
+    if m:
+        try:
+            obj = _json.loads(m.group(0))
+            if isinstance(obj, dict):
+                absorb(obj)
+                if not findings:
+                    findings = [
+                        f"{k}: {obj[k]}"
+                        for k in ("full_name", "current_role", "company",
+                                  "connection_degree", "location")
+                        if obj.get(k)]
+                    for s in obj.get("recent_activity_signals") or []:
+                        findings.append(str(s)[:300])
+        except json.JSONDecodeError:
+            pass
+    if summary and not findings:
+        findings.append(summary[:300])
+    return findings, identity, extras
 
 
 class AgentOperator:
@@ -120,12 +192,53 @@ class AgentOperator:
             step = self.plan_step(person, record)
             if not step:
                 continue
-            return self.execute(person, record, step)
+            result = self.execute(person, record, step)
+            if result.get("status") == "rate_limited":
+                # This person is cooling down - don't stall the whole
+                # queue behind them, move on to the next candidate.
+                continue
+            return result
         summary = self.queue.summary()
         self.log(f"idle - allowed={summary['allowed']} "
                  f"manual={summary['manual']} blocked={summary['blocked']}, "
                  f"nobody has a permitted next action")
         return {"status": "idle"}
+
+    def action_done(self, prospect_id: str, action: str) -> bool:
+        """Has this task ALREADY been completed for this person?
+
+        Consulted by the planner AND by the executor before any dispatch,
+        so a finished task (e.g. profile view) is never repeated even if
+        something upstream asks for it twice. Reads full history from the
+        immutable event store, never the bounded recent-events window."""
+        ev = self.memory.events
+        pid = prospect_id
+        if action == "observe_profile":
+            evt = ev.last_event_of_type(pid, "profile_observed")
+            if not evt:
+                return False
+            data = evt.get("data") or {}
+            # Legacy poisoned rows: pre-abort-guard failures were logged
+            # with success=True and the error text as summary. Those are
+            # NOT observations - re-run them.
+            blob = str(data.get("summary") or "") + \
+                str(data.get("error") or "")
+            if not data.get("success", True) or \
+                    any(m in blob.lower() for m in _ABORT_MARKERS):
+                return False
+            # A "success" that yielded no structured facts (schema-mismatch
+            # era rows) also deserves one more pass to backfill structure.
+            return bool(self.memory.facts.get_facts(pid))
+        if action == "send_connection_request":
+            return bool(ev.last_event_of_type(pid, "connection_sent"))
+        if action == "send_message":
+            return False  # conversations are open-ended; gating is state-based
+        if action == "reply":
+            return ev.count_events(pid, "reply_detected") <= \
+                ev.count_events(pid, "reply_processed")
+        if action == "follow_up":
+            return not self._follow_up_due(pid)
+        return False
 
     # ---- deterministic planner (no LLM) ----
 
@@ -148,17 +261,15 @@ class AgentOperator:
                 self.memory.events.count_events(pid, "human_cleared"):
             return None
 
-        def count(event_type):
-            return sum(1 for e in recent if e.get("type") == event_type)
-
-        observed = any(
-            e.get("type") == "profile_observed" and
-            (e.get("data") or {}).get("success", True)
-            for e in recent)
-        connection_sent = count("connection_sent") > 0
-        messages_sent = count("message_sent")
-        replies_seen = count("reply_detected")
-        replies_done = count("reply_processed")
+        # Full-history milestones via action_done() - never the bounded
+        # recent-events window.
+        observed = self.action_done(pid, "observe_profile")
+        connection_sent = self.action_done(pid, "send_connection_request")
+        messages_sent = self.memory.events.count_events(pid, "message_sent")
+        replies_seen = self.memory.events.count_events(
+            pid, "reply_detected")
+        replies_done = self.memory.events.count_events(
+            pid, "reply_processed")
 
         if not observed and allows(record, "observe_profile"):
             return {"action": "observe_profile"}
@@ -220,6 +331,14 @@ class AgentOperator:
         action = step["action"]
         record = normalize(record)
 
+        if self.action_done(pid, action):
+            self.memory.record_event(
+                "action_skipped", pid,
+                data={"action": action, "reason": "already_done"},
+                source="operator")
+            self.log(f"SKIP {name}: {action} already done")
+            return {"status": "already_done", "person": name}
+
         if record["blocked"] or record["permission"] != "allowed" or \
                 not allows(record, action):
             self.memory.record_event(
@@ -279,26 +398,26 @@ class AgentOperator:
             result = observe_profile(self.browser, person)
             ok = bool(result.get("success"))
             self.memory.events.record_action("observe_profile", pid, success=ok)
-            findings = result.get("observations") or []
+            findings, identity, extras = _parse_observation(result)
             data = {"success": ok,
-                    "findings": [str(f)[:300] for f in findings[:10]],
+                    "findings": findings[:10],
                     "summary": str(result.get("summary", ""))[:500]}
+            if identity:
+                data.update(identity)
             for f in findings:
-                if isinstance(f, dict):
-                    for key in ("name", "company", "role"):
-                        if f.get(key):
-                            data[key] = f[key]
-                    if any(f.get(k) for k in ("name", "company", "role")):
-                        self.memory.record_fact(
-                            pid, "observed",
-                            str(f.get("claim") or f)[:200],
-                            confidence=float(f.get("confidence") or 0.8),
-                            source="linkedin_observation",
-                            evidence=str(f.get("evidence", ""))[:200])
+                self.memory.record_fact(
+                    pid, "observed", f,
+                    confidence=0.8,
+                    source="linkedin_observation")
+            for e in extras:
+                self.memory.record_fact(
+                    pid, "observed", e,
+                    confidence=0.7,
+                    source="linkedin_observation")
             self.memory.record_event("profile_observed", pid, data=data,
                                      source="browser", confidence=0.9)
             self.log(f"DONE {person.get('full_name', pid)}: profile observed "
-                     f"(success={ok})")
+                     f"(success={ok}, facts={len(findings) + len(extras)})")
             return {"status": "executed" if ok else "failed"}
         except Exception as exc:
             self.memory.events.record_action("observe_profile", pid,
