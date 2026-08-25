@@ -1,33 +1,17 @@
-# --- Personal / private data: NEVER commit ---
-# LinkedIn account exports and connection lists
-linkedin_export/
+# Private LinkedIn data
 Connections.csv
 *.csv
-# Local prospect/conversation database
 linkedin_agent.db
-linkedin_intelligence/db/
-linkedin_intelligence/data/
+linkedin_agent.db-shm
+linkedin_agent.db-wal
 
-# --- Secrets / env ---
-.env
-.env.*
-*.secret
-
-# --- Logs & generated output ---
-*.log
-output.txt
-planner_output.txt
-ALL_SOURCE_FILES.txt
-
-# --- Python ---
+# Python
 __pycache__/
 *.py[cod]
-.pytest_cache/
 .venv/
 venv/
 
-# --- OS / editor ---
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+# Local configuration / logs
+.env
+.env.*
+*.log
