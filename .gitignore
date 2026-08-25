@@ -1,9 +1,11 @@
 # --- Personal / private data: NEVER commit ---
-# LinkedIn account export (connections, messages, phone numbers...)
+# LinkedIn account exports and connection lists
 linkedin_export/
-# Prospect databases (scraped profiles, outreach history)
+Connections.csv
+*.csv
+# Local prospect/conversation database
+linkedin_agent.db
 linkedin_intelligence/db/
-# Generated research reports derived from prospect data
 linkedin_intelligence/data/
 
 # --- Secrets / env ---
