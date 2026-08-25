@@ -21,6 +21,18 @@ REQUIRED = {
 }
 
 
+def _find_header(lines: list[str]) -> int:
+    """Find the actual LinkedIn CSV header after any Notes/preamble lines."""
+    for index, line in enumerate(lines):
+        columns = next(csv.reader([line]), [])
+        if set(columns) >= REQUIRED:
+            return index
+    raise ValueError(
+        "Could not find the LinkedIn CSV header. Expected columns: "
+        + ", ".join(sorted(REQUIRED))
+    )
+
+
 def import_csv(path: str = CSV_PATH, clean: bool = True) -> int:
     if not os.path.exists(path):
         raise FileNotFoundError(f"connections.csv not found: {path}")
@@ -30,24 +42,30 @@ def import_csv(path: str = CSV_PATH, clean: bool = True) -> int:
     else:
         init_db()
 
-    count = 0
     with open(path, "r", encoding="utf-8-sig", newline="") as fh:
-        reader = csv.DictReader(fh)
-        headers = set(reader.fieldnames or [])
-        missing = REQUIRED - headers
-        if missing:
-            raise ValueError(
-                "connections.csv is missing columns: "
-                + ", ".join(sorted(missing))
-            )
+        lines = fh.read().splitlines()
 
-        for row in reader:
-            if not (row.get("First Name") or row.get("Last Name")):
-                continue
-            if not (row.get("URL") or "").strip():
-                continue
-            upsert_prospect(row)
-            count += 1
+    header_index = _find_header(lines)
+    csv_text = "\n".join(lines[header_index:])
+    reader = csv.DictReader(csv_text.splitlines())
+
+    headers = set(reader.fieldnames or [])
+    missing = REQUIRED - headers
+    if missing:
+        raise ValueError(
+            "connections.csv is missing columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    count = 0
+    for row in reader:
+        first = (row.get("First Name") or "").strip()
+        last = (row.get("Last Name") or "").strip()
+        url = (row.get("URL") or "").strip()
+        if not (first or last) or not url:
+            continue
+        upsert_prospect(row)
+        count += 1
 
     return count
 
