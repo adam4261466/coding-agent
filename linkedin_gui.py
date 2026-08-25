@@ -16,6 +16,7 @@ class LinkedInApp(tk.Tk):
         self.geometry("1180x760")
         self.minsize(980, 650)
         self.selected_id: int | None = None
+        self.rows = []
         self._build()
         self.refresh_prospects()
 
@@ -55,7 +56,7 @@ class LinkedInApp(tk.Tk):
         self.reply_btn = ttk.Button(actions, text="Generate reply", command=self.generate_reply, state="disabled")
         self.reply_btn.pack(side="left", padx=6)
 
-        conversation = ttk.LabelFrame(right, text="Real conversation (only messages you actually sent / received)", padding=8)
+        conversation = ttk.LabelFrame(right, text="Real conversation", padding=8)
         conversation.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         conversation.columnconfigure(0, weight=1)
         self.history = tk.Text(conversation, height=12, wrap="word", state="disabled", font=("Segoe UI", 10))
@@ -73,16 +74,15 @@ class LinkedInApp(tk.Tk):
         buttons.grid(row=2, column=0, sticky="ew")
         ttk.Button(buttons, text="Save as sent", command=lambda: self.save_message("outbound")).pack(side="left")
         ttk.Button(buttons, text="Save prospect reply", command=lambda: self.save_message("inbound")).pack(side="left", padx=8)
-        ttk.Button(buttons, text="Clear", command=lambda: self.editor.delete("1.0", "end")).pack(side="left")
+        ttk.Button(buttons, text="Clear", command=self.clear_editor).pack(side="left")
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(right, textvariable=self.status_var, relief="sunken", anchor="w").grid(row=4, column=0, sticky="ew", pady=(8, 0))
 
     def refresh_prospects(self) -> None:
-        rows = core.search_prospects(self.search_var.get())
-        self.rows = rows
+        self.rows = core.search_prospects(self.search_var.get())
         self.listbox.delete(0, "end")
-        for row in rows:
+        for row in self.rows:
             company = f" — {row['company']}" if row['company'] else ""
             self.listbox.insert("end", f"{row['first_name']} {row['last_name']}{company}")
 
@@ -98,8 +98,7 @@ class LinkedInApp(tk.Tk):
         for button in (self.open_btn, self.initial_btn, self.reply_btn):
             button.configure(state="normal")
         self._show_history()
-        self.editor.delete("1.0", "end")
-        self.editor.insert("1.0", "")
+        self.clear_editor()
         self.status_var.set(row["url"])
 
     def _require_selection(self) -> int:
@@ -122,8 +121,10 @@ class LinkedInApp(tk.Tk):
     def open_profile(self) -> None:
         try:
             row = core.get_prospect(self._require_selection())
+            if row is None:
+                raise ValueError("Prospect not found")
             core.open_profile(row["url"])
-            self.status_var.set(f"Opened {row['url']}. Send/read manually in your browser.")
+            self.status_var.set(f"Opened {row['url']}. Work manually in your browser.")
         except Exception as exc:
             messagebox.showerror("Open LinkedIn", str(exc))
 
@@ -171,11 +172,14 @@ class LinkedInApp(tk.Tk):
             content = self.editor.get("1.0", "end").strip()
             core.add_message(prospect_id, direction, content)
             self._show_history()
-            self.editor.delete("1.0", "end")
+            self.clear_editor()
             label = "sent" if direction == "outbound" else "reply saved"
             self.status_var.set(f"Conversation updated: {label}.")
         except Exception as exc:
             messagebox.showerror("Save message", str(exc))
+
+    def clear_editor(self) -> None:
+        self.editor.delete("1.0", "end")
 
 
 if __name__ == "__main__":
