@@ -14,20 +14,30 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "connections.csv" (
-    echo ERROR: connections.csv was not found beside the scripts.
-    echo Put your LinkedIn connections export here and run this again.
-    pause
-    exit /b 1
+python -c "import playwright" >nul 2>nul
+if errorlevel 1 (
+    echo Installing required Python package: playwright...
+    python -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo ERROR: Failed to install required packages.
+        pause
+        exit /b 1
+    )
 )
 
-echo Importing connections.csv...
-python import_connections.py
-if errorlevel 1 (
+if not exist "connections.csv" (
+    echo WARNING: connections.csv was not found.
+    echo You can still use ^"Add prospect by URL^" for individual prospects.
     echo.
-    echo ERROR: Failed to import connections.csv.
-    pause
-    exit /b 1
+) else (
+    echo Importing connections.csv...
+    python import_connections.py
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Failed to import connections.csv.
+        pause
+        exit /b 1
+    )
 )
 
 echo.
