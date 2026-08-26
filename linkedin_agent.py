@@ -79,8 +79,10 @@ def init_db() -> None:
 
 
 def reset_db() -> None:
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
+    with connect() as db:
+        db.execute("DROP TABLE IF EXISTS drafts")
+        db.execute("DROP TABLE IF EXISTS messages")
+        db.execute("DROP TABLE IF EXISTS prospects")
     init_db()
 
 
