@@ -4,15 +4,12 @@ This branch contains only the simple LinkedIn conversation assistant.
 
 ## Prospect sources
 
-There are two ways to add a person:
+Prospects can come from either source:
 
-### 1. Existing LinkedIn connections
-Keep your LinkedIn export beside the scripts as `connections.csv`. The importer understands LinkedIn's `Notes:` preamble and finds the real CSV header automatically.
+- `connections.csv` — your existing LinkedIn connections.
+- **Direct LinkedIn profile URL** — a person you are not connected to.
 
-### 2. Any LinkedIn profile URL
-Use **Add prospect by URL** in the GUI and paste a full LinkedIn profile URL. The assistant opens that profile in its dedicated Chrome profile, reads text visible on the page, stores the captured profile context, marks the person as **Not connected**, and then lets you generate a personalized first-contact draft.
-
-The assistant does not send connection requests or messages automatically.
+Direct-URL prospects are stored as **Not connected** and remain in the same CRM pipeline as CSV connections.
 
 ## Pipeline
 
@@ -21,48 +18,58 @@ Every prospect is classified from the real conversation stored in `linkedin_agen
 - **Not contacted** — no message has been recorded.
 - **Contacted · waiting** — you sent a message and the prospect has not replied yet.
 - **Needs your reply** — the most recent message is from the prospect.
-- **Active conversation** — both sides have exchanged messages and the latest message is yours.
+- **Active conversation** — both sides have exchanged messages.
 - **Elimination Zone** — you explicitly decided not to communicate with this person.
 
 The GUI shows these states with colors and category counts.
 
-## Workflow for a URL prospect
+## Existing connections
 
-1. Click **Add prospect by URL**.
-2. Paste the person's LinkedIn profile URL.
-3. The assistant opens the profile in its dedicated Chrome window and reads the visible profile text.
-4. The person is added to the DB as **Not connected**.
-5. Click **Generate initial**. The prompt explicitly treats them as a person you are not connected to, so it will not pretend you already know them.
-6. Copy the draft into the appropriate LinkedIn UI and send manually.
-7. Save the exact text you actually sent with **Save as sent**.
-8. When they reply, paste the exact response and click **Save prospect reply**.
-9. Click **Generate reply** for the next response.
-
-## Workflow for connections.csv
-
-1. Put `connections.csv` at the project root.
+1. Put the LinkedIn export at the project root as `connections.csv`.
 2. Start `Start LinkedIn Agent.bat`.
-3. The CSV is imported/updated without deleting existing conversations or elimination decisions.
-4. Search/select a prospect and use the same conversation workflow.
+3. The importer finds the real LinkedIn header even when LinkedIn puts a `Notes:` preamble before it.
+4. The importer updates prospect information without deleting conversation history or elimination decisions.
+
+## Add someone by profile URL
+
+1. Start Chrome normally and sign in to LinkedIn.
+2. In Chrome, open `chrome://inspect/#remote-debugging`.
+3. Enable **Remote Debugging** and allow the connection if Chrome asks.
+4. Start the LinkedIn assistant.
+5. Click **＋ Add prospect by URL**.
+6. Paste the person's full LinkedIn profile URL.
+7. The assistant attaches to the existing Chrome session, opens that profile, and reads visible profile information.
+8. The person is saved as **Not connected · Added from profile URL**.
+9. Click **Generate initial** to create the personalized first-contact draft.
+
+The assistant does **not** launch a separate LinkedIn browser profile for profile reading and does not send connection requests or messages automatically.
+
+## Conversation workflow
+
+1. Search/select one prospect.
+2. Use **Open LinkedIn** or the profile reader to open/read the saved URL.
+3. Use **Generate initial** or **Generate reply** for an Ollama draft.
+4. Send the message yourself in LinkedIn.
+5. Save the exact outbound message with **Save as sent**.
+6. Paste and save the exact prospect response with **Save prospect reply**.
+7. Use **Generate reply** for the next response.
+8. Use **Move to Elimination Zone** for prospects you never want to contact. A reason is optional.
+9. Use **Restore** to bring an eliminated prospect back.
 
 ## Colors
 
 Blue = not contacted  
 Orange = contacted / waiting  
-Red = needs your reply  
-Green = active two-way conversation  
+Red = prospect replied / your turn  
+Green = two-way active conversation  
 Gray = elimination zone
-
-## Browser profile
-
-The URL-based profile reader uses a dedicated persistent Chrome profile in `.linkedin-browser-profile`. Log in to LinkedIn in that Chrome window once; subsequent profile reads reuse the session. Only page text visible to the browser is captured.
 
 ## Data
 
 - `connections.csv` is local/private and ignored by Git.
 - `linkedin_agent.db` is local/private and ignored by Git.
-- `.linkedin-browser-profile/` is local/private and should never be committed.
-- Conversation history and prospect decisions persist locally.
+- Conversation history and elimination decisions persist across CSV imports.
+- Profile context read from direct URLs is stored locally in the database.
 
 ## Ollama
 
@@ -72,3 +79,11 @@ Defaults:
 - Model: `gemma4:31b-cloud`
 
 Override them with `OLLAMA_URL` and `OLLAMA_MODEL` environment variables.
+
+## Chrome connection
+
+The profile reader uses Chrome DevTools Protocol (CDP) and defaults to:
+
+`http://127.0.0.1:9222`
+
+Override this with `LINKEDIN_CDP_URL` if your Chrome remote-debugging endpoint uses another address.
