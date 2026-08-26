@@ -1,60 +1,50 @@
-# LinkedIn Conversation Assistant
+# LinkedIn Conversation CRM
 
-This repository contains only the simple LinkedIn conversation assistant.
+This branch contains only the simple LinkedIn conversation assistant.
 
-## Files
+## Pipeline
 
-- `connections.csv` — your private LinkedIn connections export, kept local and ignored by Git.
-- `import_connections.py` — resets and imports `connections.csv` into the local database.
-- `linkedin_agent.py` — prospect lookup, SQLite storage, browser opening, and Ollama message generation.
-- `linkedin_gui.py` — the desktop interface.
-- `Start LinkedIn Agent.bat` — imports `connections.csv` automatically and starts the GUI.
+Every prospect is classified from the real conversation stored in `linkedin_agent.db`:
 
-## CSV location
+- **Not contacted** — no message has been recorded.
+- **Contacted · waiting** — you sent a message and the prospect has not replied yet.
+- **Active conversation** — both sides have exchanged at least one message.
+- **Needs your reply** — the most recent message is from the prospect.
+- **Elimination Zone** — you explicitly decided not to communicate with this person.
 
-Place your LinkedIn export exactly here:
+The GUI shows these states with colors and category counts, so you can understand the whole pipeline without opening every prospect.
 
-`connections.csv`
+## Workflow
 
-It must be beside the Python files and contain these columns:
+1. Put your LinkedIn export at the project root as `connections.csv`.
+2. Start `Start LinkedIn Agent.bat`.
+3. The importer finds the real LinkedIn header even when LinkedIn puts a `Notes:` preamble before it.
+4. The importer updates prospect information **without deleting conversation history or elimination decisions**.
+5. Search/select a prospect.
+6. Use **Open LinkedIn** to open the saved profile URL.
+7. Use **Generate initial** or **Generate reply** for an Ollama draft.
+8. Send the message yourself in LinkedIn.
+9. Save the exact outbound message with **Save as sent**.
+10. Paste and save the exact prospect response with **Save prospect reply**.
+11. Use **Generate reply** for the next response.
+12. Use **Move to Elimination Zone** for prospects you never want to contact. A reason is optional.
+13. Use **Restore** to bring an eliminated prospect back into the normal pipeline.
 
-`First Name,Last Name,URL,Email Address,Company,Position,Connected On`
+## Colors
 
-The filename is fixed. You do not need to pass a path.
+Blue = not contacted  
+Orange = contacted / waiting  
+Red = prospect replied / your turn  
+Green = two-way active conversation  
+Gray = elimination zone
 
-## Starting the assistant
+The assistant never sends LinkedIn messages automatically.
 
-Double-click:
+## Data
 
-`Start LinkedIn Agent.bat`
-
-It will:
-
-1. Check that `connections.csv` exists.
-2. Delete/recreate the local `linkedin_agent.db`.
-3. Import every valid connection from `connections.csv`.
-4. Start the LinkedIn GUI.
-
-## Conversation workflow
-
-1. Search/select one prospect.
-2. Click **Open LinkedIn** to open the saved URL in your normal browser.
-3. Click **Generate initial message**.
-4. Copy the generated draft into LinkedIn and send it manually.
-5. Paste exactly what you sent and click **Save as sent**.
-6. When the prospect replies, paste the exact reply and click **Save prospect reply**.
-7. Click **Generate reply** to create the next personalized response.
-8. Repeat for the conversation.
-
-Nothing is sent automatically. The assistant only opens the saved profile URL, generates drafts with Ollama, and stores messages that you explicitly record.
-
-## Database
-
-The local database is:
-
-`linkedin_agent.db`
-
-It contains prospects, real inbound/outbound messages, and generated drafts. It is recreated from `connections.csv` every time `Start LinkedIn Agent.bat` is launched.
+- `connections.csv` is local/private and ignored by Git.
+- `linkedin_agent.db` is local/private and ignored by Git.
+- Conversation history is preserved when the CSV is imported again.
 
 ## Ollama
 
@@ -63,4 +53,4 @@ Defaults:
 - URL: `http://127.0.0.1:11434`
 - Model: `gemma4:31b-cloud`
 
-You can override them with `OLLAMA_URL` and `OLLAMA_MODEL` environment variables.
+Override them with `OLLAMA_URL` and `OLLAMA_MODEL` environment variables.
