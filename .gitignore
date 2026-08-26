@@ -1,9 +1,11 @@
 # Private LinkedIn data
+connections.csv
 Connections.csv
 *.csv
 linkedin_agent.db
 linkedin_agent.db-shm
 linkedin_agent.db-wal
+.linkedin-browser-profile/
 
 # Python
 __pycache__/
